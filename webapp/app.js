@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.11';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.12';
 import { renderLabel, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.11';
+const APP_VERSION = '1.1.12';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -498,7 +498,7 @@ function scheduleBleReconnect(delay = null) {
     bleReconnectTimer = null;
     if (printer) return;
     bleReconnectInFlight = true;
-    setStatus('Bluetoothへ再接続中…');
+    setStatus('Bluetoothプリンターを検索中…');
     let retry = true;
     try {
       const t = await BleTransport.reconnect(bleReconnectDevice || deviceId);

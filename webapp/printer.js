@@ -206,6 +206,32 @@ export class BleTransport {
     return device ? BleTransport.open(device, { reconnecting: true }) : null;
   }
 
+  static async waitForAdvertisement(device, timeoutMs = 15000) {
+    if (typeof device.watchAdvertisements !== 'function') return;
+    const controller = new AbortController();
+    let timer;
+    let onAdvertisement;
+    const received = new Promise((resolve) => {
+      onAdvertisement = () => resolve(true);
+      device.addEventListener('advertisementreceived', onAdvertisement, { once: true });
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      await device.watchAdvertisements({ signal: controller.signal });
+      if (!await received) {
+        throw new Error('Bluetoothプリンターが見つかりません。電源と距離を確認してください');
+      }
+    } catch (e) {
+      // Older implementations do not support advertisement watching. They
+      // can still attempt the GATT connection directly.
+      if (e.name !== 'NotSupportedError') throw e;
+    } finally {
+      clearTimeout(timer);
+      device.removeEventListener('advertisementreceived', onAdvertisement);
+      controller.abort();
+    }
+  }
+
   static async open(device, { reconnecting = false } = {}) {
     const t = new BleTransport(device);
     try {
@@ -216,6 +242,7 @@ export class BleTransport {
         device.gatt.disconnect();
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
+      if (reconnecting) await BleTransport.waitForAdvertisement(device);
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService(BLE_SERVICE_UUID);
       t.command = await service.getCharacteristic(BLE_COMMAND_UUID);
