@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const STORE_KEY = 'nameland-label-v3';
 
 const TAPE_MM = [3.5, 6, 9, 12, 18, 24];
@@ -660,7 +660,25 @@ function init() {
 }
 
 // ---------- installable app ----------
+const APP_WINDOW = { w: 1120, h: 720 };
+
+// Chrome opens a freshly installed app window at an arbitrary size; size and
+// centre it once so everything fits, then leave later resizing to the user.
+function sizeAppWindow() {
+  if (!matchMedia('(display-mode: standalone)').matches) return;
+  try {
+    if (localStorage.getItem('nameland-window-sized')) return;
+    const { w, h } = APP_WINDOW;
+    window.resizeTo(w, h);
+    window.moveTo(
+      (screen.availLeft || 0) + Math.max(0, Math.round((screen.availWidth - w) / 2)),
+      (screen.availTop || 0) + Math.max(0, Math.round((screen.availHeight - h) / 2)));
+    localStorage.setItem('nameland-window-sized', '1');
+  } catch { /* storage or window APIs unavailable */ }
+}
+
 function setupInstall() {
+  sizeAppWindow();
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch((e) => log(`Service Worker 登録エラー: ${e.message}`));
   }
