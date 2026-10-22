@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAME LAND i-ma KL-SP100</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#17181b">
+<style>
+  :root {
+    --bg: #eceef1; --surface: #ffffff; --surface-2: #f5f6f8; --text: #17181b; --muted: #6c7079;
+    --line: #e1e3e8; --line-strong: #cfd2d9; --accent: #3b5bfd; --accent-soft: #e8ecff; --accent-text: #fff;
+    --danger: #d93025; --ok: #1e8e3e; --stage: #dfe2e7;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 4px 16px rgba(16,24,40,.06);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121316; --surface: #1b1d21; --surface-2: #23262b; --text: #eceef2; --muted: #9298a3;
+      --line: #2c3036; --line-strong: #3a3f47; --accent: #6b85ff; --accent-soft: #252c4a; --accent-text: #fff;
+      --danger: #ff6b5e; --ok: #4cc26b; --stage: #0d0e10;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  svg { display: block; }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+    background: color-mix(in srgb, var(--surface) 85%, transparent);
+    backdrop-filter: saturate(1.4) blur(12px); border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; min-width: 0; }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 8px; background: var(--text); color: var(--surface);
+    display: grid; place-items: center; flex: none;
+  }
+  .brand b { font-size: 15px; letter-spacing: .01em; }
+  .brand small { color: var(--muted); font-size: 12px; }
+  .device {
+    display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  }
+  .device .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); flex: none; }
+  .device.on .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  #status { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .device.on #status { color: var(--text); }
+
+  /* ---------- layout ---------- */
+  .app {
+    display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start;
+    max-width: 1400px; margin: 0 auto; padding: 20px;
+  }
+  .inspector { position: sticky; top: 72px; max-height: calc(100vh - 92px); overflow: auto; }
+  .main { display: grid; gap: 16px; min-width: 0; }
+  .content { padding: 4px 0; }
+  .content textarea { min-height: 110px; font-size: 17px; }
+  @media (max-width: 920px) {
+    .app { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+    .main { order: -1; }
+    .inspector { position: static; max-height: none; }
+  }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+
+  /* ---------- stage / preview ---------- */
+  .stage { padding: 0; overflow: hidden; }
+  .stage-area {
+    position: relative; min-height: 280px; display: grid; place-items: center; padding: 48px 24px 40px;
+    background:
+      radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--text) 9%, transparent) 1px, transparent 0) 0 0 / 18px 18px,
+      var(--stage);
+  }
+  .tape-wrap { display: grid; justify-items: center; gap: 14px; max-width: 100%; }
+  .tape {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    background: var(--tape, #fbfbf8); border-radius: 2px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 6px 18px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.2);
+    transition: background-color .2s;
+  }
+  .tape::before, .tape::after { /* cut lines */
+    content: ""; position: absolute; top: 0; bottom: 0; width: 0;
+    border-left: 1px dashed rgba(0,0,0,.18);
+  }
+  .tape::before { left: var(--feed, 0px); }
+  .tape::after { right: var(--feed, 0px); }
+  #preview { display: block; mix-blend-mode: multiply; }
+  .dim {
+    display: flex; align-items: center; gap: 8px; width: 100%; color: var(--muted); font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .dim::before, .dim::after { content: ""; flex: 1; height: 1px; background: var(--line-strong); }
+  .stage-foot {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-right: auto; min-width: 0; }
+  .seg.small { flex: none; }
+  .seg.small button { height: 24px; padding: 0 10px; font-size: 12px; }
+  .chip {
+    font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line);
+    padding: 2px 10px; border-radius: 999px; white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  #warn { color: var(--danger); font-size: 13px; padding: 0 16px 12px; }
+  #warn:empty { display: none; }
+
+  /* ---------- print bar ---------- */
+  .printbar { display: flex; align-items: center; gap: 16px; padding: 14px 16px; flex-wrap: wrap; }
+  .stepper { display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; }
+  .stepper button { width: 36px; height: 40px; border: 0; background: var(--surface-2); cursor: pointer; font-size: 18px; }
+  .stepper button:hover { background: var(--line); }
+  .stepper input {
+    width: 48px; height: 40px; border: 0; text-align: center; background: var(--surface);
+    -moz-appearance: textfield; font-variant-numeric: tabular-nums;
+  }
+  .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .copies-label { font-size: 12px; color: var(--muted); margin-right: -8px; }
+  #progress { color: var(--muted); font-size: 13px; margin-right: auto; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line-strong);
+    background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap;
+  }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.big { height: 44px; padding: 0 28px; font-size: 15px; font-weight: 600; border-radius: 12px; }
+  .btn:disabled { opacity: .45; cursor: default; filter: none; }
+  .btn.icon { width: 32px; padding: 0; }
+
+  /* ---------- inspector ---------- */
+  .inspector { padding: 4px 0; min-width: 0; }
+  .group { padding: 16px 18px; }
+  .group + .group { border-top: 1px solid var(--line); }
+  .group h2 {
+    margin: 0 0 12px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  }
+  .field { margin-top: 12px; }
+  .field:first-of-type { margin-top: 0; }
+  .label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .label output { color: var(--text); font-variant-numeric: tabular-nums; }
+  textarea, input[type=text], input[type=number], input[type=search], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 10px;
+    background: var(--surface); outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  textarea:focus, input:focus, select:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  textarea { min-height: 76px; resize: vertical; font-size: 15px; }
+
+  .seg { display: flex; padding: 3px; gap: 3px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; }
+  .seg button {
+    flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--muted);
+    cursor: pointer; font-size: 13px; white-space: nowrap;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: end; }
+  .row > * { flex: 1; min-width: 0; }
+  .row > .fixed { flex: none; }
+
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+
+  .font-btn {
+    width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface);
+    cursor: pointer; text-align: left;
+  }
+  .font-btn:hover { border-color: var(--accent); }
+  .font-btn span { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .font-btn svg { color: var(--muted); flex: none; }
+
+  .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+  .swatch {
+    width: 28px; height: 28px; border-radius: 50%; border: 1px solid rgba(0,0,0,.15); cursor: pointer;
+    background: var(--c); position: relative;
+  }
+  .swatch.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+
+  .toggle { display: flex; align-items: center; justify-content: space-between; font-size: 13px; cursor: pointer; }
+  .toggle input { appearance: none; width: 34px; height: 20px; border-radius: 999px; background: var(--line-strong); position: relative; cursor: pointer; transition: background .15s; margin: 0; }
+  .toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+  .toggle input:checked { background: var(--accent); }
+  .toggle input:checked::after { transform: translateX(14px); }
+
+  details.log summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  #log {
+    font: 11px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; max-height: 200px; overflow: auto;
+    background: var(--surface-2); padding: 8px; border-radius: 8px; margin-top: 8px;
+  }
+  .hidden { display: none !important; }
+  .notice { padding: 12px 16px; color: var(--danger); }
+
+  /* ---------- font picker ---------- */
+  .scrim { position: fixed; inset: 0; background: rgba(10,12,16,.35); z-index: 50; display: grid; place-items: center; padding: 16px; }
+  .picker {
+    width: min(560px, 100%); height: min(640px, 100%); display: flex; flex-direction: column;
+    background: var(--surface); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.35); overflow: hidden;
+  }
+  .picker-head { display: flex; gap: 8px; align-items: center; padding: 14px; border-bottom: 1px solid var(--line); }
+  .picker-head input { flex: 1; }
+  .picker-note {
+    display: flex; align-items: center; gap: 10px; justify-content: space-between;
+    padding: 10px 14px; font-size: 12px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--line);
+  }
+  .picker-list { flex: 1; overflow: auto; padding: 6px; }
+  .font-item {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px;
+    width: 100%; padding: 8px 12px; border: 0; border-radius: 10px; background: none; cursor: pointer; text-align: left;
+  }
+  .font-item:hover { background: var(--surface-2); }
+  .font-item.on { background: var(--accent-soft); }
+  .font-item .sample { font-size: 22px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .font-item .name { font-size: 11px; color: var(--muted); grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .font-item .count { font-size: 11px; color: var(--muted); grid-row: 1 / span 2; grid-column: 2; }
+  .picker-empty { padding: 32px; text-align: center; color: var(--muted); grid-column: 1 / -1; }
+  .picker.small { height: min(520px, 100%); }
+  .picker.wide { width: min(880px, 100%); height: min(720px, 100%); }
+  .picker-head .seg { flex: none; }
+  .picker-list h3 { margin: 10px 12px 4px; font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .06em; }
+
+  .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .group-head h2 { margin: 0 auto 0 0; }
+  .insert-bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  .frames { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .frames button {
+    height: 40px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
+    display: grid; place-items: center; cursor: pointer; color: var(--muted); font-size: 11px;
+  }
+  .frames button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+  .fr { width: 34px; height: 18px; border: 2px solid currentColor; display: block; }
+  .fr-none { border: 0; width: auto; height: auto; }
+  .fr-round { border-radius: 5px; }
+  .fr-capsule { border-radius: 9px; }
+  .fr-double { outline: 2px solid currentColor; outline-offset: 2px; width: 28px; height: 12px; }
+
+  .symbol-grid {
+    flex: 1; overflow: auto; padding: 10px; display: grid; gap: 4px;
+    grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); align-content: start;
+  }
+  .symbol-grid button {
+    height: 44px; border: 0; border-radius: 8px; background: none; cursor: pointer; font-size: 22px;
+  }
+  .symbol-grid button:hover { background: var(--surface-2); }
+
+  .library-grid {
+    flex: 1; overflow: auto; padding: 14px; display: grid; gap: 12px; align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  }
+  .lib-card {
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface);
+    display: flex; flex-direction: column;
+  }
+  .lib-thumb {
+    height: 96px; display: grid; place-items: center; padding: 12px; cursor: pointer;
+    background: var(--stage);
+  }
+  .lib-thumb img { max-width: 100%; max-height: 72px; background: #fbfbf8; box-shadow: 0 2px 8px rgba(0,0,0,.18); image-rendering: auto; }
+  .lib-meta { display: flex; align-items: center; gap: 6px; padding: 8px 10px; }
+  .lib-meta div { flex: 1; min-width: 0; }
+  .lib-meta b { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-meta small { color: var(--muted); font-size: 11px; }
+
+  /* ---------- compact density ---------- */
+  body { font-size: 13px; }
+  .topbar { padding: 6px 16px; }
+  .brand .mark { width: 26px; height: 26px; border-radius: 7px; }
+  .brand b { font-size: 14px; }
+  .brand small { font-size: 11px; }
+  .app { gap: 12px; padding: 12px; }
+  .main { gap: 12px; }
+  .inspector { top: 52px; max-height: calc(100vh - 64px); }
+  .group { padding: 10px 14px; }
+  .group h2 { margin-bottom: 8px; }
+  .group-head { margin-bottom: 8px; }
+  .group-head h2 { margin-bottom: 0; }
+  .field { margin-top: 8px; }
+  .label { margin-bottom: 3px; font-size: 11px; }
+  .row { gap: 8px; }
+  .row.tight { gap: 6px; }
+  .seg { padding: 2px; gap: 2px; border-radius: 8px; }
+  .seg button { height: 26px; font-size: 12px; border-radius: 6px; }
+  textarea, input[type=text], input[type=number], input[type=search], select { padding: 5px 8px; border-radius: 8px; }
+  .font-btn { padding: 4px 10px; border-radius: 8px; }
+  .font-btn span { font-size: 15px; }
+  .frames button { height: 28px; }
+  .fr { width: 26px; height: 13px; }
+  .fr-double { width: 20px; height: 8px; }
+  .fr-capsule { border-radius: 7px; }
+  .swatches { gap: 5px; }
+  .swatch { width: 16px; height: 16px; }
+  .swatch.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--accent); }
+  .btn { height: 28px; padding: 0 12px; font-size: 12px; }
+  .btn.icon { width: 28px; padding: 0; }
+  .btn.big { height: 38px; padding: 0 24px; font-size: 14px; border-radius: 10px; }
+  .content textarea { min-height: 56px; font-size: 15px; }
+  .insert-bar { margin-top: 6px; }
+  .stage-area { min-height: 150px; padding: 26px 16px 20px; }
+  .stage-foot { padding: 8px 14px; }
+  .printbar { padding: 8px 14px; }
+  .stepper button { width: 30px; height: 32px; }
+  .stepper input { width: 40px; height: 32px; }
+  .toggle { gap: 8px; justify-content: flex-start; font-size: 12px; }
+  .app { grid-template-columns: 300px minmax(0, 1fr); }
+  @media (max-width: 920px) { .app { grid-template-columns: minmax(0, 1fr); } }
+  .stage .printbar { border-top: 1px solid var(--line); }
+  .stage-area { min-height: 120px; padding: 22px 14px 16px; }
+  .content .group { padding-bottom: 12px; }
+  .content textarea { min-height: 46px; }
+  .chip { padding: 1px 8px; font-size: 11px; }
+  .group-head .hint { margin-right: auto; margin-left: -2px; }
+  .group-head h2 { margin-right: auto; }
+  .group-head h2:has(+ .hint) { margin-right: 6px; }
+  .stage-foot .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .stage-foot .copies-label { margin-right: -2px; }
+  .stage-foot #progress { margin-right: 0; }
+  .chips { margin-right: auto; flex: 1 1 0; flex-wrap: nowrap; overflow: hidden; mask-image: linear-gradient(90deg, #000 85%, transparent); }
+  .stage-foot { flex-wrap: nowrap; }
+  @media (max-width: 700px) { .stage-foot { flex-wrap: wrap; } .chips { flex-basis: 100%; } }
+  .brand .ver { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="10" rx="1.5"/><path d="M6 11h6M6 13.5h3.5"/><path d="M17 7v10" stroke-dasharray="2 2"/></svg>
+    </div>
+    <b>NAME LAND i-ma KL-SP100</b> <small class="ver" id="appVersion"></small>
+  </div>
+  <button class="btn hidden" id="installBtn" title="このアプリをインストール">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+    インストール
+  </button>
+  <div class="device" id="device">
+    <span class="dot"></span>
+    <span id="status">未接続</span>
+    <button class="btn" id="connectBtn">接続</button>
+  </div>
+</header>
+
+<div class="app">
+  <aside class="card inspector">
+    <div class="group">
+      <h2>文字</h2>
+      <div class="row">
+        <button type="button" class="font-btn" id="fontBtn">
+          <span id="fontName">ヒラギノ角ゴシック</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 10l4-4 4 4M8 14l4 4 4-4"/></svg>
+        </button>
+        <select id="fontStyle" class="fixed" style="width:96px" aria-label="スタイル"></select>
+      </div>
+      <div class="row field">
+        <div>
+          <div class="label">大きさ <output id="fontScaleVal"></output></div>
+          <input type="range" id="fontScale" min="30" max="100" value="100">
+        </div>
+        <div class="seg fixed" id="align" style="width:108px">
+          <button data-v="left" aria-label="左揃え"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg></button>
+          <button data-v="center" aria-label="中央揃え"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M5.5 18h13"/></svg></button>
+          <button data-v="right" aria-label="右揃え"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M10 12h10M7 18h13"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head">
+        <h2>枠</h2>
+        <label class="toggle">白黒反転 <input type="checkbox" id="invert"></label>
+      </div>
+      <div class="frames" id="frame">
+        <button data-v="none" title="なし"><span class="fr fr-none">なし</span></button>
+        <button data-v="rect" title="四角"><span class="fr fr-rect"></span></button>
+        <button data-v="round" title="角丸"><span class="fr fr-round"></span></button>
+        <button data-v="double" title="二重"><span class="fr fr-double"></span></button>
+        <button data-v="capsule" title="カプセル"><span class="fr fr-capsule"></span></button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head">
+        <h2>テープ</h2>
+        <div class="swatches" id="tapeColor" title="テープの色（プレビュー用）"></div>
+      </div>
+      <div class="row">
+        <div class="seg" id="tapeSeg"></div>
+        <button class="btn icon fixed" id="readTapeBtn" title="装着中のテープ幅を読み取る" disabled>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h2>仕上がり</h2>
+      <div class="row">
+        <div>
+          <div class="label">長さ</div>
+          <div class="row tight">
+            <div class="seg" id="lengthMode">
+              <button data-v="auto">自動</button>
+              <button data-v="fixed">指定</button>
+            </div>
+            <input type="number" id="length" class="fixed" style="width:64px" min="7" max="600" value="50" aria-label="長さ mm">
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <div class="label">前後の余白</div>
+        <div class="seg" id="margin">
+          <button data-v="0">小 3mm</button>
+          <button data-v="1">中 10mm</button>
+          <button data-v="2">大 21mm</button>
+        </div>
+      </div>
+      <div class="row field">
+        <div>
+          <div class="label">濃さ <output id="densityVal"></output></div>
+          <input type="range" id="density" min="1" max="5" value="3">
+        </div>
+        <div>
+          <div class="label">カット</div>
+          <select id="cutting">
+            <option value="1">フル＋ハーフ</option>
+            <option value="0">フルカット</option>
+            <option value="2">カットしない</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <details class="log">
+        <summary>通信ログ</summary>
+        <div id="log"></div>
+      </details>
+    </div>
+  </aside>
+
+  <div class="main">
+    <p id="unsupported" class="card notice hidden">このブラウザはWebUSBに対応していません。Chrome または Edge で開いてください。</p>
+
+    <section class="card content">
+      <div class="group">
+        <div class="group-head">
+          <h2>内容</h2>
+          <span class="hint" id="labelName"></span>
+          <button class="btn" id="symbolBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/></svg>
+            記号
+          </button>
+          <button class="btn" id="libraryBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1"/><rect x="14" y="4" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            ラベル一覧
+          </button>
+          <button class="btn" id="saveBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg>
+            保存
+          </button>
+        </div>
+        <div class="field">
+          <textarea id="text" placeholder="ラベルの文字（改行で複数行。空欄ならコードだけ）">ネームランド</textarea>
+        </div>
+        <div class="field row">
+          <div>
+            <div class="label">コード</div>
+            <div class="seg" id="code">
+              <button data-v="none">なし</button>
+              <button data-v="qr">QR</button>
+              <button data-v="barcode">バーコード</button>
+            </div>
+          </div>
+          <div class="fixed" id="codePosBox">
+            <div class="label">位置</div>
+            <div class="seg" id="codePos">
+              <button data-v="left">左</button>
+              <button data-v="right">右</button>
+            </div>
+          </div>
+        </div>
+        <div class="field" id="qrField">
+          <div class="label">QRコードの内容</div>
+          <input type="text" id="qrText" value="https://example.com" placeholder="URL や テキスト">
+        </div>
+        <div class="field" id="barField">
+          <div class="row">
+            <div class="fixed" style="width:220px">
+              <div class="label">種類</div>
+              <select id="barType"></select>
+            </div>
+            <div>
+              <div class="label">バーコードの内容</div>
+              <input type="text" id="barText" value="490123456789" placeholder="数字や英数字">
+            </div>
+          </div>
+          <div class="field">
+            <label class="toggle">下に数字を表示 <input type="checkbox" id="barShowText" checked></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card stage">
+      <div class="stage-area" id="stage">
+        <div class="tape-wrap">
+          <div class="tape" id="tape"><canvas id="preview"></canvas></div>
+          <div class="dim" id="dim"></div>
+        </div>
+      </div>
+      <div class="stage-foot">
+        <div class="chips" id="info"></div>
+        <div class="seg small" id="previewMode">
+          <button data-v="smooth" title="画面用になめらかに表示">なめらか</button>
+          <button data-v="dots" title="実際に印刷されるドットで表示">ドット</button>
+        </div>
+        <span class="sep"></span>
+        <span class="copies-label">枚数</span>
+        <div class="stepper">
+          <button type="button" id="copiesDown" aria-label="減らす">−</button>
+          <input type="number" id="copies" min="1" max="99" value="1">
+          <button type="button" id="copiesUp" aria-label="増やす">＋</button>
+        </div>
+        <span id="progress"></span>
+        <button class="btn primary big" id="printBtn" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/></svg>
+          印刷
+        </button>
+      </div>
+      <div id="warn"></div>
+    </section>
+
+  </div>
+</div>
+
+<div class="scrim hidden" id="fontPicker">
+  <div class="picker" role="dialog" aria-label="フォントを選ぶ">
+    <div class="picker-head">
+      <div class="seg" id="fontTab">
+        <button data-v="preset">標準</button>
+        <button data-v="local">PC</button>
+      </div>
+      <input type="search" id="fontSearch" placeholder="検索">
+      <button class="btn" data-close>閉じる</button>
+    </div>
+    <div class="picker-note hidden" id="fontNote">
+      <span id="fontNoteText">Macにインストールされているフォントをすべて使えます。</span>
+      <button class="btn primary" id="fontLoadBtn">フォントを読み込む</button>
+    </div>
+    <div class="picker-list" id="fontList"></div>
+  </div>
+</div>
+
+<div class="scrim hidden" id="symbolPicker">
+  <div class="picker small" role="dialog" aria-label="記号・絵文字">
+    <div class="picker-head">
+      <div class="seg" id="symbolTab">
+        <button data-v="symbols">記号</button>
+        <button data-v="emoji">絵文字</button>
+      </div>
+      <span style="flex:1"></span>
+      <button class="btn" data-close>閉じる</button>
+    </div>
+    <div class="picker-note">クリックするとカーソル位置に入ります。絵文字は白黒に変換して印刷されます。</div>
+    <div class="symbol-grid" id="symbolGrid"></div>
+  </div>
+</div>
+
+<div class="scrim hidden" id="library">
+  <div class="picker wide" role="dialog" aria-label="ラベル一覧">
+    <div class="picker-head">
+      <input type="text" id="saveName" placeholder="名前を付けて保存">
+      <button class="btn primary" id="saveConfirm">保存</button>
+      <button class="btn" data-close>閉じる</button>
+    </div>
+    <div class="picker-note" id="libFolderBar">
+      <span id="libFolderText"></span>
+      <span style="display:flex;gap:6px">
+        <button class="btn primary hidden" id="libPermBtn">アクセスを許可</button>
+        <button class="btn" id="libFolderBtn">保存先フォルダを選ぶ</button>
+      </span>
+    </div>
+    <div class="library-grid" id="libraryGrid"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

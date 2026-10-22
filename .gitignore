@@ -1,0 +1,6 @@
+# Case design data and the extracted vendor APK are kept out of the repo
+case/
+apk/
+.claude/
+.DS_Store
+__pycache__/
