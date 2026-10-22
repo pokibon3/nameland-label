@@ -189,7 +189,18 @@ export class BleTransport {
       return BleTransport.open(deviceOrId, { reconnecting: true });
     }
     if (!navigator.bluetooth.getDevices) return null;
-    const devices = await navigator.bluetooth.getDevices();
+    let devices = await navigator.bluetooth.getDevices();
+    // The Web Bluetooth specification also exposes authorized devices on the
+    // Bluetooth permission result. Use it as a fallback for Chrome versions
+    // whose getDevices() implementation temporarily returns an empty list.
+    if (!devices.length && deviceOrId && navigator.permissions?.query) {
+      try {
+        const permission = await navigator.permissions.query({
+          name: 'bluetooth', deviceId: deviceOrId,
+        });
+        devices = Array.from(permission.devices || []);
+      } catch { /* Bluetooth permission descriptors are not supported */ }
+    }
     const device = (deviceOrId && devices.find((d) => d.id === deviceOrId)) ||
       devices.find((d) => d.name && d.name.startsWith('KL-SP100'));
     return device ? BleTransport.open(device, { reconnecting: true }) : null;

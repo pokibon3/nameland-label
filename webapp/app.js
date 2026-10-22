@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.10';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.11';
 import { renderLabel, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.10';
+const APP_VERSION = '1.1.11';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -508,7 +508,9 @@ function scheduleBleReconnect(delay = null) {
         log('Bluetoothへ自動再接続しました');
         retry = false;
       } else {
-        log('許可済みBluetooth端末が見つかりません。接続ボタンから一度選択してください');
+        setStatus('Bluetooth端末を選択してください');
+        log('許可済みBluetooth端末が見つかりません。接続ボタンから選択してください。起動時の自動接続にはChromeの「Use the new permissions backend for Web Bluetooth」を有効にする必要があります');
+        retry = false;
       }
     } catch (e) {
       log(`Bluetooth再接続 ${bleReconnectAttempt + 1} 回目: ${e.message}`);
