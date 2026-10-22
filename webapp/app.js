@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.9';
 import { renderLabel, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,8 +8,10 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.9';
 const STORE_KEY = 'nameland-label-v3';
+const TRANSPORT_KEY = 'nameland-last-transport';
+const BLE_DEVICE_KEY = 'nameland-last-ble-device';
 
 const TAPE_MM = [3.5, 6, 9, 12, 18, 24];
 const TAPE_COLORS = [
@@ -55,6 +57,9 @@ let busy = false;
 let font = null;        // resolved { css, weight, family, style }
 let current = null;     // last rendered label
 let currentName = '';   // name of the label loaded from / saved to the library
+let bleReconnectTimer = null;
+let bleReconnectAttempt = 0;
+let bleReconnectDevice = null;
 const syncs = [];       // segment re-sync functions, run after loading settings
 
 // ---------- settings ----------
@@ -470,9 +475,68 @@ function openLibrary() {
 }
 
 // ---------- printer ----------
+function cancelBleReconnect() {
+  if (bleReconnectTimer !== null) clearTimeout(bleReconnectTimer);
+  bleReconnectTimer = null;
+  bleReconnectAttempt = 0;
+}
+
+function scheduleBleReconnect(delay = null) {
+  if (bleReconnectTimer !== null || printer || !('bluetooth' in navigator)) return;
+  let lastTransport = null;
+  let deviceId = null;
+  try {
+    lastTransport = localStorage.getItem(TRANSPORT_KEY);
+    deviceId = localStorage.getItem(BLE_DEVICE_KEY);
+  } catch { /* storage unavailable */ }
+  if (lastTransport !== 'ble') return;
+
+  const wait = delay ?? Math.min(30000, 1000 * (2 ** Math.min(bleReconnectAttempt, 5)));
+  setStatus(wait ? 'Bluetooth再接続待ち…' : 'Bluetoothへ再接続中…');
+  bleReconnectTimer = setTimeout(async () => {
+    bleReconnectTimer = null;
+    if (printer) return;
+    setStatus('Bluetoothへ再接続中…');
+    try {
+      const t = await BleTransport.reconnect(bleReconnectDevice || deviceId);
+      if (t) {
+        bleReconnectAttempt = 0;
+        attach(t);
+        log('Bluetoothへ自動再接続しました');
+        return;
+      }
+      log('Bluetooth自動再接続にはブラウザの再選択が必要です');
+    } catch (e) {
+      log(`Bluetooth再接続 ${bleReconnectAttempt + 1} 回目: ${e.message}`);
+    }
+    bleReconnectAttempt++;
+    scheduleBleReconnect();
+  }, wait);
+}
+
 function attach(t) {
+  if (bleReconnectTimer !== null) clearTimeout(bleReconnectTimer);
+  bleReconnectTimer = null;
+  bleReconnectAttempt = 0;
   transport = t;
   printer = new KLSP100(t, log);
+  const kind = t instanceof BleTransport ? 'ble' : 'usb';
+  if (kind === 'ble') bleReconnectDevice = t.device;
+  $('transportMode').value = kind;
+  try {
+    localStorage.setItem(TRANSPORT_KEY, kind);
+    if (kind === 'ble') localStorage.setItem(BLE_DEVICE_KEY, t.device.id);
+  } catch { /* storage unavailable */ }
+  if (t instanceof BleTransport) t.device.addEventListener('gattserverdisconnected', () => {
+    if (transport !== t) return;
+    if (t.intentionalClose) return;
+    bleReconnectDevice = t.device;
+    printer = transport = null;
+    setStatus('切断されました');
+    log('Bluetoothが切断されました。再接続を試みます');
+    updateButtons();
+    if (!t.intentionalClose) scheduleBleReconnect();
+  }, { once: true });
   setStatus(t.name, true);
   log(`接続: ${t.name}`);
   updateButtons();
@@ -480,14 +544,20 @@ function attach(t) {
 
 async function connect() {
   if (printer) {
+    transport.intentionalClose = true;
+    bleReconnectDevice = null;
+    try { localStorage.removeItem(TRANSPORT_KEY); } catch { /* storage unavailable */ }
     await transport.close();
     printer = transport = null;
+    cancelBleReconnect();
     setStatus('未接続');
     updateButtons();
     return;
   }
   try {
-    attach(await UsbTransport.request());
+    cancelBleReconnect();
+    const kind = $('transportMode').value;
+    attach(await (kind === 'ble' ? BleTransport.request() : UsbTransport.request()));
   } catch (e) {
     if (e.name === 'NotFoundError') return; // picker cancelled
     setStatus('接続できません');
@@ -634,10 +704,20 @@ function init() {
   $('readTapeBtn').addEventListener('click', readTape);
   $('printBtn').addEventListener('click', print);
 
-  if (!('usb' in navigator)) {
+  const hasUsb = 'usb' in navigator;
+  const hasBle = 'bluetooth' in navigator;
+  $('transportMode').querySelector('[value=usb]').disabled = !hasUsb;
+  $('transportMode').querySelector('[value=ble]').disabled = !hasBle;
+  let lastTransport = null;
+  try { lastTransport = localStorage.getItem(TRANSPORT_KEY); } catch { /* storage unavailable */ }
+  if (lastTransport === 'ble' && hasBle) $('transportMode').value = 'ble';
+  else if (lastTransport === 'usb' && hasUsb) $('transportMode').value = 'usb';
+  else if (!hasUsb && hasBle) $('transportMode').value = 'ble';
+  if (!hasUsb && !hasBle) {
     $('unsupported').classList.remove('hidden');
     $('connectBtn').disabled = true;
-  } else {
+  }
+  if (hasUsb) {
     navigator.usb.addEventListener('disconnect', (e) => {
       if (transport && e.device === transport.device) {
         printer = transport = null;
@@ -645,8 +725,17 @@ function init() {
         updateButtons();
       }
     });
-    UsbTransport.reconnect().then((t) => t && attach(t)).catch((e) => log(`自動接続できませんでした: ${e.message}`));
   }
+  if (lastTransport === 'ble' && hasBle) {
+    scheduleBleReconnect(0);
+  } else if (hasUsb) {
+    UsbTransport.reconnect().then((t) => t && attach(t))
+      .catch((e) => log(`USBへ自動接続できませんでした: ${e.message}`));
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !printer) scheduleBleReconnect(0);
+  });
+  window.addEventListener('online', () => scheduleBleReconnect(0));
 
   new ResizeObserver(layoutPreview).observe($('stage'));
 
@@ -680,7 +769,16 @@ function sizeAppWindow() {
 function setupInstall() {
   sizeAppWindow();
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch((e) => log(`Service Worker 登録エラー: ${e.message}`));
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      // A production PWA service worker is useful on GitHub Pages, but on the
+      // local development server it can keep an older module graph alive.
+      navigator.serviceWorker.getRegistrations().then((registrations) =>
+        Promise.all(registrations.map((registration) => registration.unregister())))
+        .catch((e) => log(`Service Worker 解除エラー: ${e.message}`));
+    } else {
+      navigator.serviceWorker.register('sw.js').then((registration) => registration.update())
+        .catch((e) => log(`Service Worker 登録エラー: ${e.message}`));
+    }
   }
   let deferred = null;
   window.addEventListener('beforeinstallprompt', (e) => {

@@ -56,6 +56,7 @@
   .device.on .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
   #status { font-size: 13px; color: var(--muted); white-space: nowrap; }
   .device.on #status { color: var(--text); }
+  .device select { width: auto; padding: 5px 24px 5px 8px; border-radius: 999px; font-size: 12px; }
 
   /* ---------- layout ---------- */
   .app {
@@ -64,6 +65,7 @@
   }
   .inspector { position: sticky; top: 72px; max-height: calc(100vh - 92px); overflow: auto; }
   .main { display: grid; gap: 16px; min-width: 0; }
+  .main .stage { order: -1; }
   .content { padding: 4px 0; }
   .content textarea { min-height: 110px; font-size: 17px; }
   @media (max-width: 920px) {
@@ -349,6 +351,10 @@
   <div class="device" id="device">
     <span class="dot"></span>
     <span id="status">未接続</span>
+    <select id="transportMode" aria-label="接続方法" title="接続方法">
+      <option value="usb">USB</option>
+      <option value="ble">Bluetooth</option>
+    </select>
     <button class="btn" id="connectBtn">接続</button>
   </div>
 </header>
@@ -451,7 +457,7 @@
   </aside>
 
   <div class="main">
-    <p id="unsupported" class="card notice hidden">このブラウザはWebUSBに対応していません。Chrome または Edge で開いてください。</p>
+    <p id="unsupported" class="card notice hidden">このブラウザはWebUSB / Web Bluetoothに対応していません。Chrome または Edge で開いてください。</p>
 
     <section class="card content">
       <div class="group">
@@ -596,6 +602,6 @@
   </div>
 </div>
 
-<script type="module" src="app.js"></script>
+<script type="module" src="app.js?v=1.1.9"></script>
 </body>
 </html>

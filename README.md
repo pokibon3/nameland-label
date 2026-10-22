@@ -1,21 +1,31 @@
 # NAME LAND i-ma KL-SP100 ラベルアプリ
 
-カシオ ネームランド KL-SP100 を USB でつないで、ブラウザからラベルを作成・印刷する Web アプリです。
+カシオ ネームランド KL-SP100 を USB または Bluetooth でつないで、ブラウザからラベルを作成・印刷する Web アプリです。
 
 **アプリ:** https://pokibon3.github.io/nameland-label/
 
 ## 必要なもの
 
-- Chrome または Edge（WebUSB を使うため。Safari・Firefox は非対応）
-- USB で接続した KL-SP100
+- Chrome または Edge（WebUSB / Web Bluetooth を使うため。Safari・Firefox は非対応）
+- USB または Bluetooth で接続できる KL-SP100
 
 ## できること
 
 - テキスト（Mac にインストールされた全フォント対応）、QR コード、バーコード（CODE128 / JAN・EAN-13 / EAN-8）
 - 枠、記号・絵文字、白黒反転
 - テープ幅 3.5〜24mm、装着テープ幅の読み取り
+- USB / Bluetooth の切り替え
+- 前回許可した Bluetooth プリンターへの起動時・切断後の自動再接続
 - ラベルの保存・呼び出し（任意のフォルダに JSON ファイルとして保存）
 - インストールしてアプリとして使用（オフライン起動可）
+
+## 接続する
+
+画面右上で `USB` または `Bluetooth` を選び、「接続」を押します。
+
+Bluetooth を初めて使う場合は、ブラウザの機器一覧から `KL-SP100_…` を選択してください。接続に成功した機器は記憶され、次回起動時に自動接続します。プリンター側からリンクが切断された場合も、同じ機器へ自動再接続します。ユーザーが「切断」を押した場合は自動再接続しません。
+
+テープ幅を読み取れることを確認してから印刷してください。
 
 ## ローカルで動かす
 
@@ -23,9 +33,14 @@
 webapp/serve.sh
 ```
 
-`http://localhost:8123` を Chrome で開きます。
+`http://localhost:8123` を Chrome で開きます。ローカルサーバーは開発中の古い JavaScript が残らないよう、キャッシュを無効化して配信します。
+
+## BLE プロトコル
+
+APK から確認した GATT UUID、接続ネゴシエーション、フレーム形式、画像暗号化と分割転送については [BLE_PROTOCOL.md](BLE_PROTOCOL.md) にまとめています。
 
 ## 注意
 
 カシオ純正のアプリではありません。通信手順は相互運用のために独自に調べたもので、動作は保証されません。
-LABEL DESIGN MAKER が起動していると USB を使えないため、終了してから使ってください。
+LABEL DESIGN MAKER が起動していると USB / Bluetooth を使えないため、終了してから使ってください。
+Bluetooth の機器選択、ローカルフォント、保存先フォルダはブラウザの許可が必要です。

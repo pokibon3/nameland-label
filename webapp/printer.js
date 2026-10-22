@@ -4,6 +4,9 @@
 // replies are read from bulk IN (max 64 bytes). 0x06 = ACK.
 
 export const USB_FILTER = { vendorId: 0x07cf, productId: 0x4206 };
+export const BLE_SERVICE_UUID = 'ac120000-63a6-4f4e-b093-ee6cf341e5c7';
+const BLE_COMMAND_UUID = 'ac120001-63a6-4f4e-b093-ee6cf341e5c7';
+const BLE_RESPONSE_UUID = 'ac120002-63a6-4f4e-b093-ee6cf341e5c7';
 
 const ACK = 0x06;
 const NAK = 0x15;
@@ -95,6 +98,253 @@ export class UsbTransport {
 
   async close() {
     try { await this.device.close(); } catch { /* already closed */ }
+  }
+}
+
+// BLE framing recovered from LABEL DESIGN MAKER's CHLHomeLabelTransporter.
+// The printer exposes one write characteristic and one notify characteristic.
+// Command bytes are the same as USB, with a one-byte direction prefix and a
+// five-bit sequence header. Raster data is encrypted and sent in MTU-sized
+// chunks after the connection negotiates a key and payload size.
+const BLE_TABLES = (() => {
+  const s =
+    '77f58159a9d20c4b15771657d0c8bed3052d23d07d68d0199795208faa829f36' +
+    '35be1afe7e5fa8cfe2ecefd919b276a9b30d57ec91277286646a8cd3c07557a6' +
+    '0507904d46fdfda1d42111cc7f8853b87cceade06ec3a2423c37f3208f385810' +
+    '89d38c6531b933cb22f5b33fe0a548b14eb86de5c95b75ef3e5ae15f9f5e209f' +
+    '7eb44ad6b3b3cbe08e5619958d1577be52e229f6fb0586183454f0ca1760ad68' +
+    'e75ced8edd12eca3386b05d8becb48f050ce8a178a0235fda1cc9a627e1063f6' +
+    'effa5ff902e348377ed2f97bcdbb7121587f48fbcda462a9457be30390601d80' +
+    'eafecc7496a3fd56b1b483d88f9ddeb56c59f32b1751c8586ef18312b73ea0bb' +
+    '94d035075c90e631bdfa06d93c1ddeea7040bbceb577be0816dec8682f84f60c' +
+    'a33b1281e59c95465b4526f8c6219897db789b8ef4cc9c2cf46c0d9b78854645' +
+    '9ee6171cbc3671f70715f359268e6e386e728cbf42835118ba8f2e8bfab5dcba' +
+    '56aa0cddcb992dce7639392a198eba90a40ed27dde43a7a6d8ed2008d5f0632a';
+  const bytes = new Uint8Array(s.match(/../g).map((x) => parseInt(x, 16)));
+  return [bytes.subarray(0, 128), bytes.subarray(128, 256), bytes.subarray(256)];
+})();
+
+function permuteBits(src) {
+  const out = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) {
+    const at = (n) => src[(i + n) & 7];
+    out[i] = (at(4) & 0x88) | (at(1) & 0x40) | (at(2) & 0x20) |
+      (at(3) & 0x10) | (at(5) & 0x04) | (at(6) & 0x02) | (at(7) & 0x01);
+  }
+  return out;
+}
+
+class BleRasterCipher {
+  constructor(key) {
+    if (key.length < 16) throw new Error('BLE暗号鍵の長さが不正です');
+    const [a, b, c] = BLE_TABLES;
+    this.stream = new Uint8Array(128);
+    for (let i = 0; i < 128; i++) {
+      this.stream[i] = a[(key[15] + i) & 0x7f] ^ b[(key[0] + i) & 0x7f];
+    }
+    let state = Uint8Array.of(key[1], key[4], key[13], key[14], key[8], key[9], key[5], key[11]);
+    for (const k of [key[7], key[3], key[12], key[2], key[10]]) {
+      state = permuteBits(state.map((v) => v ^ k));
+    }
+    for (let i = 0; i < 8; i++) state[i] ^= c[(key[6] + i) & 0x7f];
+    this.state = state;
+    this.offset = 0;
+  }
+
+  encrypt(data) {
+    if (data.length % 8) throw new Error('BLE画像データは8バイト単位である必要があります');
+    const out = new Uint8Array(data.length);
+    const order = [5, 0, 4, 6, 7, 2, 1, 3];
+    for (let p = 0; p < data.length; p += 8) {
+      for (let i = 0; i < 8; i++) {
+        out[p + i] = data[p + i] ^ this.state[i] ^ this.stream[(this.offset + i) & 0x7f];
+      }
+      const next = permuteBits(out.subarray(p, p + 8));
+      this.state = Uint8Array.from(order, (i) => next[i]);
+      this.offset = (this.offset + 8) & 0x7f;
+    }
+    return out;
+  }
+}
+
+export class BleTransport {
+  constructor(device) {
+    this.device = device;
+    this.sequence = 0;
+    this.notifications = [];
+    this.waiters = [];
+    this.responses = [];
+    this.trace = [];
+  }
+
+  static async request() {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [BLE_SERVICE_UUID] }],
+    });
+    return BleTransport.open(device);
+  }
+
+  static async reconnect(deviceOrId = null) {
+    if (deviceOrId && typeof deviceOrId === 'object' && deviceOrId.gatt) {
+      return BleTransport.open(deviceOrId);
+    }
+    if (!navigator.bluetooth.getDevices) return null;
+    const devices = await navigator.bluetooth.getDevices();
+    const device = (deviceOrId && devices.find((d) => d.id === deviceOrId)) ||
+      devices.find((d) => d.name && d.name.startsWith('KL-SP100'));
+    return device ? BleTransport.open(device) : null;
+  }
+
+  static async open(device) {
+    const t = new BleTransport(device);
+    try {
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      t.command = await service.getCharacteristic(BLE_COMMAND_UUID);
+      t.response = await service.getCharacteristic(BLE_RESPONSE_UUID);
+      t.onNotification = (e) => t.deliver(new Uint8Array(
+        e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength));
+      t.response.addEventListener('characteristicvaluechanged', t.onNotification);
+      await t.response.startNotifications();
+      await t.negotiate();
+      return t;
+    } catch (e) {
+      try { device.gatt.disconnect(); } catch { /* already disconnected */ }
+      throw e;
+    }
+  }
+
+  get name() {
+    return `${this.device.name || 'KL-SP100'} (Bluetooth)`;
+  }
+
+  deliver(value) {
+    this.recordTrace('<', value);
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(value);
+    else this.notifications.push(value);
+  }
+
+  nextNotification(timeoutMs = 10000) {
+    if (this.notifications.length) return Promise.resolve(this.notifications.shift());
+    return new Promise((resolve, reject) => {
+      let timer;
+      const done = (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      this.waiters.push(done);
+      timer = setTimeout(() => {
+        const i = this.waiters.indexOf(done);
+        if (i >= 0) this.waiters.splice(i, 1);
+        reject(this.timeoutError());
+      }, timeoutMs);
+    });
+  }
+
+  recordTrace(direction, value) {
+    this.trace.push(`${direction} ${hex(value)}`);
+    if (this.trace.length > 20) this.trace.shift();
+  }
+
+  timeoutError() {
+    return new Error(`プリンターのBLE応答がありません（タイムアウト）\n\n通信トレース:\n${this.trace.join('\n')}`);
+  }
+
+  async frame(payload, {
+    commandType = 0x80, text = false, timeoutMs = 10000, responseType = 0x40,
+  } = {}) {
+    this.sequence = (this.sequence + 1) & 0x1f;
+    const header = commandType | (text ? 0x20 : 0) | this.sequence;
+    const data = new Uint8Array(payload.length + 1);
+    data[0] = header;
+    data.set(payload, 1);
+    const pending = responseType === null ? null : this.nextNotification(timeoutMs);
+    this.recordTrace('>', data);
+    await this.command.writeValueWithResponse(data);
+    if (!pending) return null;
+    const deadline = Date.now() + timeoutMs;
+    let reply = await pending;
+    // Ignore notifications for another frame class. This mirrors the APK's
+    // state machine, which remains in command-wait until the expected class.
+    while ((reply[0] & 0xe0) !== responseType) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw this.timeoutError();
+      reply = await this.nextNotification(remaining);
+    }
+    return reply.subarray(1);
+  }
+
+  async negotiate() {
+    await this.frame(Uint8Array.of(0x06), { responseType: 0x80 }); // device address
+    await this.frame(Uint8Array.of(0x07, 0x06, 0x06, 0x00, 0x3c), { responseType: 0x80 });
+    const size = await this.frame(Uint8Array.of(0x01), { responseType: 0x80 });
+    if (size.length < 2) throw new Error('BLEペイロードサイズを取得できませんでした');
+    this.payloadSize = size[0] | (size[1] << 8);
+    const key = await this.frame(Uint8Array.of(0x02), { responseType: 0x80 });
+    this.cipher = new BleRasterCipher(key);
+  }
+
+  static commandBytes(packet) {
+    if (packet[0] !== 0x02) return packet.subarray(0, 1);
+    const fixed = { 0x02: 8, 0x1a: 8, 0x01: 4, 0x1c: 5, 0x0d: 5,
+      0x09: 11, 0x19: 5, 0x04: 4, 0x1d: 5 };
+    return packet.slice(0, fixed[packet[1]] || Math.min(packet.length, 4 + packet[2] + (packet[3] << 8)));
+  }
+
+  async send(data) {
+    if (data[0] === 0x02 && data[1] === 0xff) {
+      await this.sendRaster(data.subarray(6));
+      return;
+    }
+    const raw = BleTransport.commandBytes(data);
+    const query = raw[0] === 0x02 && (raw[1] === 0x1a || raw[1] === 0x1d);
+    const payload = new Uint8Array(raw.length + 1);
+    payload[0] = query ? 0x20 : 0x01;
+    payload.set(raw, 1);
+
+    // 0x24/0x25 acquire and release exclusive printer access.
+    if (raw[0] === 0x24) await this.frame(Uint8Array.of(0x04), { responseType: 0x80 });
+    const reply = await this.frame(payload, {
+      commandType: 0x40,
+      timeoutMs: raw[0] === 0x0c ? 120000 : 10000,
+    });
+    if (raw[0] === 0x25) await this.frame(Uint8Array.of(0x05), { responseType: 0x80 });
+    this.responses.push(reply);
+  }
+
+  async sendRaster(data) {
+    const chunkSize = Math.floor((this.payloadSize - 6) / 8) * 8;
+    if (chunkSize < 8) throw new Error(`BLEペイロードサイズが小さすぎます (${this.payloadSize})`);
+    for (let offset = 0; offset < data.length; offset += chunkSize) {
+      const used = Math.min(chunkSize, data.length - offset);
+      const plain = new Uint8Array(chunkSize);
+      plain.set(data.subarray(offset, offset + used));
+      const encrypted = this.cipher.encrypt(plain);
+      const payload = new Uint8Array(5 + encrypted.length);
+      payload.set([0x00, 0x02, 0xfe, used & 0xff, (used >> 8) & 0xff]);
+      payload.set(encrypted, 5);
+      await this.frame(payload, { commandType: 0x40, text: true, responseType: null });
+    }
+  }
+
+  async recv(timeoutMs = 10000) {
+    if (this.responses.length) return this.responses.shift();
+    if (!timeoutMs) return new Promise((resolve) => {
+      const poll = () => this.responses.length ? resolve(this.responses.shift()) : setTimeout(poll, 20);
+      poll();
+    });
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (this.responses.length) return this.responses.shift();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw this.timeoutError();
+  }
+
+  async close() {
+    try { await this.response.stopNotifications(); } catch { /* disconnected */ }
+    try { this.device.gatt.disconnect(); } catch { /* disconnected */ }
   }
 }
 
