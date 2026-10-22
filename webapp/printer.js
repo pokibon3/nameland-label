@@ -186,18 +186,25 @@ export class BleTransport {
 
   static async reconnect(deviceOrId = null) {
     if (deviceOrId && typeof deviceOrId === 'object' && deviceOrId.gatt) {
-      return BleTransport.open(deviceOrId);
+      return BleTransport.open(deviceOrId, { reconnecting: true });
     }
     if (!navigator.bluetooth.getDevices) return null;
     const devices = await navigator.bluetooth.getDevices();
     const device = (deviceOrId && devices.find((d) => d.id === deviceOrId)) ||
       devices.find((d) => d.name && d.name.startsWith('KL-SP100'));
-    return device ? BleTransport.open(device) : null;
+    return device ? BleTransport.open(device, { reconnecting: true }) : null;
   }
 
-  static async open(device) {
+  static async open(device, { reconnecting = false } = {}) {
     const t = new BleTransport(device);
     try {
+      // Chrome can keep the previous page's GATT connection alive briefly
+      // after an installed PWA window is closed. Reusing that stale server
+      // makes service discovery fail forever on subsequent automatic retries.
+      if (reconnecting && device.gatt.connected) {
+        device.gatt.disconnect();
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService(BLE_SERVICE_UUID);
       t.command = await service.getCharacteristic(BLE_COMMAND_UUID);
@@ -343,8 +350,10 @@ export class BleTransport {
   }
 
   async close() {
-    try { await this.response.stopNotifications(); } catch { /* disconnected */ }
+    // Disconnect synchronously first. `pagehide` does not give the awaited
+    // stopNotifications call enough time when an installed app is closed.
     try { this.device.gatt.disconnect(); } catch { /* disconnected */ }
+    try { await this.response.stopNotifications(); } catch { /* disconnected */ }
   }
 }
 

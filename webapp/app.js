@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.9';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.10';
 import { renderLabel, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.9';
+const APP_VERSION = '1.1.10';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -60,6 +60,7 @@ let currentName = '';   // name of the label loaded from / saved to the library
 let bleReconnectTimer = null;
 let bleReconnectAttempt = 0;
 let bleReconnectDevice = null;
+let bleReconnectInFlight = false;
 const syncs = [];       // segment re-sync functions, run after loading settings
 
 // ---------- settings ----------
@@ -482,7 +483,7 @@ function cancelBleReconnect() {
 }
 
 function scheduleBleReconnect(delay = null) {
-  if (bleReconnectTimer !== null || printer || !('bluetooth' in navigator)) return;
+  if (bleReconnectTimer !== null || bleReconnectInFlight || printer || !('bluetooth' in navigator)) return;
   let lastTransport = null;
   let deviceId = null;
   try {
@@ -496,19 +497,25 @@ function scheduleBleReconnect(delay = null) {
   bleReconnectTimer = setTimeout(async () => {
     bleReconnectTimer = null;
     if (printer) return;
+    bleReconnectInFlight = true;
     setStatus('Bluetoothへ再接続中…');
+    let retry = true;
     try {
       const t = await BleTransport.reconnect(bleReconnectDevice || deviceId);
       if (t) {
         bleReconnectAttempt = 0;
         attach(t);
         log('Bluetoothへ自動再接続しました');
-        return;
+        retry = false;
+      } else {
+        log('許可済みBluetooth端末が見つかりません。接続ボタンから一度選択してください');
       }
-      log('Bluetooth自動再接続にはブラウザの再選択が必要です');
     } catch (e) {
       log(`Bluetooth再接続 ${bleReconnectAttempt + 1} 回目: ${e.message}`);
+    } finally {
+      bleReconnectInFlight = false;
     }
+    if (!retry || printer) return;
     bleReconnectAttempt++;
     scheduleBleReconnect();
   }, wait);
@@ -736,6 +743,14 @@ function init() {
     if (!document.hidden && !printer) scheduleBleReconnect(0);
   });
   window.addEventListener('online', () => scheduleBleReconnect(0));
+  window.addEventListener('pagehide', (e) => {
+    // Release the BLE link before Chrome tears down this PWA window. Keep the
+    // remembered transport/device so the next launch reconnects automatically.
+    if (!e.persisted && transport instanceof BleTransport) {
+      transport.intentionalClose = true;
+      transport.close();
+    }
+  });
 
   new ResizeObserver(layoutPreview).observe($('stage'));
 
