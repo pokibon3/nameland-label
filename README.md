@@ -41,7 +41,7 @@ webapp/serve.sh
 
 ## BLE プロトコル
 
-APK から確認した GATT UUID、接続ネゴシエーション、フレーム形式、画像暗号化と分割転送については [BLE_PROTOCOL.md](BLE_PROTOCOL.md) にまとめています。
+[BLE_PROTOCOL.md](BLE_PROTOCOL.md) にまとめています。
 
 ## 注意
 
