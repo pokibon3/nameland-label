@@ -39,10 +39,6 @@ webapp/serve.sh
 
 `http://localhost:8123` を Chrome で開きます。ローカルサーバーは開発中の古い JavaScript が残らないよう、キャッシュを無効化して配信します。
 
-## BLE プロトコル
-
-[BLE_PROTOCOL.md](BLE_PROTOCOL.md) にまとめています。
-
 ## 注意
 
 カシオ純正のアプリではありません。通信手順は相互運用のために独自に調べたもので、動作は保証されません。

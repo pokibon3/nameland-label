@@ -4,3 +4,4 @@ apk/
 .claude/
 .DS_Store
 __pycache__/
+BLE_PROTOCOL.md
