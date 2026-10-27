@@ -223,9 +223,7 @@ export class BleTransport {
     });
     try {
       await device.watchAdvertisements({ signal: controller.signal });
-      if (!await received) {
-        throw new Error('Bluetoothプリンターが見つかりません。電源と距離を確認してください');
-      }
+      return await received;
     } catch (e) {
       // Older implementations do not support advertisement watching. They
       // can still attempt the GATT connection directly.
@@ -247,8 +245,14 @@ export class BleTransport {
         device.gatt.disconnect();
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      if (reconnecting) await BleTransport.waitForAdvertisement(device);
-      const server = await device.gatt.connect();
+      // Chrome does not always report advertisements after the printer drops
+      // the link at the end of a job, even though it is connectable. Try the
+      // GATT connection anyway; only blame range when that fails too.
+      const seen = reconnecting ? await BleTransport.waitForAdvertisement(device, 5000) : true;
+      const server = await device.gatt.connect().catch((e) => {
+        if (seen === false) throw new Error('Bluetoothプリンターが見つかりません。電源と距離を確認してください');
+        throw e;
+      });
       const service = await server.getPrimaryService(BLE_SERVICE_UUID);
       t.command = await service.getCharacteristic(BLE_COMMAND_UUID);
       t.response = await service.getCharacteristic(BLE_RESPONSE_UUID);
@@ -327,6 +331,12 @@ export class BleTransport {
 
   async negotiate() {
     await this.frame(Uint8Array.of(0x06), { responseType: 0x80 }); // device address
+    await this.prepareRaster();
+  }
+
+  // Like LABEL DESIGN MAKER, renegotiate before every image: the printer
+  // hands out a fresh key and restarts its cipher for each one.
+  async prepareRaster() {
     await this.frame(Uint8Array.of(0x07, 0x06, 0x06, 0x00, 0x3c), { responseType: 0x80 });
     const size = await this.frame(Uint8Array.of(0x01), { responseType: 0x80 });
     if (size.length < 2) throw new Error('BLEペイロードサイズを取得できませんでした');
@@ -364,6 +374,7 @@ export class BleTransport {
   }
 
   async sendRaster(data) {
+    await this.prepareRaster();
     const chunkSize = Math.floor((this.payloadSize - 6) / 8) * 8;
     if (chunkSize < 8) throw new Error(`BLEペイロードサイズが小さすぎます (${this.payloadSize})`);
     for (let offset = 0; offset < data.length; offset += chunkSize) {
@@ -476,11 +487,12 @@ export class KLSP100 {
         0x00));
       await this.cmd('cut', packet(0x02, 0x19, 0x01, 0x00, CUT[opts.endCut][opts.cutting]));
 
-      // per-copy unit: every copy sends all pages again
+      // The printer keeps the image: send it once, then just print it again
+      // for each further copy (resending appends it to the buffered image).
       let done = 0;
-      for (let c = 0; c < copies; c++) {
-        for (const page of pages) {
-          await this.transfer(page.data);
+      for (const page of pages) {
+        for (let c = 0; c < copies; c++) {
+          if (c === 0) await this.transfer(page.data);
           await this.waitBattery();
           await this.startPrint();
           onProgress(++done, total);

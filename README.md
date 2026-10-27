@@ -27,7 +27,7 @@ Bluetooth を初めて使う場合は、ブラウザの機器一覧から `KL-SP
 
 Chrome で起動時の機器選択を省略するには、`chrome://flags/#enable-web-bluetooth-new-permissions-backend` を開き、`Use the new permissions backend for Web Bluetooth` を `Enabled` にして Chrome を再起動してください。その後に一度接続すると、許可済み機器を次回起動時に取得できます。このフラグが無効な環境では、Web Bluetooth の制約によりアプリを起動するたびに機器選択が必要です。
 
-起動時は、許可済み機器の BLE 広告を最大 15 秒待ってから接続します。`Bluetooth Device is no longer in range` または「Bluetoothプリンターが見つかりません」と表示される場合は、プリンターの電源、Macとの距離、ほかの端末や LABEL DESIGN MAKER が接続していないことを確認してください。
+再接続時は、許可済み機器の BLE 広告を最大 5 秒待ってから接続します。広告が見えなくても接続を試みます（プリンターは印刷が終わるたびに BLE 接続を切るため、そのつど自動で再接続します）。`Bluetooth Device is no longer in range` または「Bluetoothプリンターが見つかりません」と表示される場合は、プリンターの電源、Macとの距離、ほかの端末や LABEL DESIGN MAKER が接続していないことを確認してください。
 
 テープ幅を読み取れることを確認してから印刷してください。
 
