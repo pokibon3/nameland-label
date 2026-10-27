@@ -21,10 +21,26 @@ function fontSpec(o, px) {
   return `${o.fontWeight || 'normal'} ${px}px ${o.font}`;
 }
 
-// Largest font size whose lines fit in `height` dots.
-function fitFontPx(lines, o, height) {
+// Ink extents above/below the em-box middle, per px of font size.
+function inkExtents(lines, o, scratch) {
+  const ref = 100;
+  scratch.font = fontSpec(o, ref);
+  scratch.textBaseline = 'middle';
+  let up = 0, down = 0;
+  for (const l of lines) {
+    const m = scratch.measureText(l);
+    up = Math.max(up, m.actualBoundingBoxAscent);
+    down = Math.max(down, m.actualBoundingBoxDescent);
+  }
+  return { up: up / ref, down: down / ref };
+}
+
+// Largest font size whose lines fit in `height` dots, descenders included.
+function fitFontPx(lines, o, height, ink) {
   const lineGap = 1.15;
   let px = Math.floor(height / (lines.length * lineGap - (lineGap - 1)));
+  const inkH = ink.up + ink.down + (lines.length - 1) * lineGap;
+  if (ink.up + ink.down > 0) px = Math.min(px, Math.floor((height - 1) / inkH));
   if (o.fontScale) px = Math.floor(px * o.fontScale);
   return Math.max(6, px);
 }
@@ -73,9 +89,10 @@ function drawFrame(ctx, frame, W, H, t) {
 
 function textBlock(o, h) {
   const lines = o.text.split('\n');
-  const px = fitFontPx(lines, o, h);
-  const lineH = Math.round(px * 1.15);
   const scratch = document.createElement('canvas').getContext('2d');
+  const ink = inkExtents(lines, o, scratch);
+  const px = fitFontPx(lines, o, h, ink);
+  const lineH = Math.round(px * 1.15);
   scratch.font = fontSpec(o, px);
   const widths = lines.map((l) => scratch.measureText(l).width);
   const w = Math.ceil(Math.max(...widths));
@@ -84,7 +101,11 @@ function textBlock(o, h) {
     draw(ctx, x, y) {
       ctx.font = fontSpec(o, px);
       ctx.textBaseline = 'middle';
-      const y0 = y + h / 2 - (lineH * (lines.length - 1)) / 2;
+      // centre the em boxes, then nudge so the ink stays inside the tape
+      const span = lineH * (lines.length - 1);
+      let y0 = y + h / 2 - span / 2;
+      y0 = Math.min(y0, y + h - 1 - ink.down * px - span);
+      y0 = Math.max(y0, y + ink.up * px);
       lines.forEach((line, i) => {
         let lx = x;
         if (o.align === 'center') lx = x + (w - widths[i]) / 2;
