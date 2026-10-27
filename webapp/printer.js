@@ -124,8 +124,12 @@ const BLE_TABLES = (() => {
   return [bytes.subarray(0, 128), bytes.subarray(128, 256), bytes.subarray(256)];
 })();
 
-function permuteBits(src) {
-  const out = new Uint8Array(8);
+// Byte order the state takes after each permutation (rodata 0x630).
+const STATE_ORDER = [5, 0, 4, 6, 7, 2, 1, 3];
+
+// `out` may be `src`: the key setup permutes in place, so later bytes read
+// earlier bytes that were already rewritten.
+function permuteBits(src, out = new Uint8Array(8)) {
   for (let i = 0; i < 8; i++) {
     const at = (n) => src[(i + n) & 7];
     out[i] = (at(4) & 0x88) | (at(1) & 0x40) | (at(2) & 0x20) |
@@ -144,7 +148,9 @@ class BleRasterCipher {
     }
     let state = Uint8Array.of(key[1], key[4], key[13], key[14], key[8], key[9], key[5], key[11]);
     for (const k of [key[7], key[3], key[12], key[2], key[10]]) {
-      state = permuteBits(state.map((v) => v ^ k));
+      const x = state.map((v) => v ^ k);
+      state = Uint8Array.from(STATE_ORDER, (i) => x[i]);
+      permuteBits(state, state);
     }
     for (let i = 0; i < 8; i++) state[i] ^= c[(key[6] + i) & 0x7f];
     this.state = state;
@@ -154,13 +160,12 @@ class BleRasterCipher {
   encrypt(data) {
     if (data.length % 8) throw new Error('BLE画像データは8バイト単位である必要があります');
     const out = new Uint8Array(data.length);
-    const order = [5, 0, 4, 6, 7, 2, 1, 3];
     for (let p = 0; p < data.length; p += 8) {
       for (let i = 0; i < 8; i++) {
         out[p + i] = data[p + i] ^ this.state[i] ^ this.stream[(this.offset + i) & 0x7f];
       }
       const next = permuteBits(out.subarray(p, p + 8));
-      this.state = Uint8Array.from(order, (i) => next[i]);
+      this.state = Uint8Array.from(STATE_ORDER, (i) => next[i]);
       this.offset = (this.offset + 8) & 0x7f;
     }
     return out;
