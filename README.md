@@ -39,6 +39,23 @@ webapp/serve.sh
 
 `http://localhost:8123` を Chrome で開きます。ローカルサーバーは開発中の古い JavaScript が残らないよう、キャッシュを無効化して配信します。
 
+## Claude Code から印刷する（MCP）
+
+`mcp/nameland_mcp.py` は、Claude Code から指示してラベルを印刷するための MCP サーバーです（Python 標準ライブラリのみ）。このリポジトリを Claude Code で開くと `.mcp.json` から自動で起動し、初回だけ利用の許可を求められます。ほかのフォルダからも使う場合はユーザー設定に登録します。
+
+```sh
+claude mcp add -s user nameland -- python3 /path/to/NAMELAND/mcp/nameland_mcp.py
+```
+
+- MCP サーバーが `http://localhost:8123` でアプリを配信します。`serve.sh` を別に起動する必要はありません（ポートが使用中なら、そのサーバーを使います）
+- 印刷を頼んだときにアプリのタブがなければ Chrome で開き、プリンターの自動接続を待ってから印刷します
+- 印刷の描画と USB / Bluetooth 通信はアプリがそのまま行うので、アプリで印刷したものと同じ結果になります
+- 指定しなかった項目（フォント、枠など）はアプリの現在の設定を使います。テープ幅を指定しない場合は装着テープを読み取ります
+
+ツール: `print_label`（印刷）、`preview_label`（印刷される画像を確認）、`printer_status`（接続状態・テープ幅）
+
+USB / Bluetooth の接続許可は、最初の 1 回だけアプリの画面で行ってください。中継はローカルサーバー上のアプリだけで有効で、GitHub Pages 版では動きません。
+
 ## 注意
 
 カシオ純正のアプリではありません。通信手順は相互運用のために独自に調べたもので、動作は保証されません。

@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.13';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.19';
 import { renderLabel, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.13';
+const APP_VERSION = '1.1.19';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -62,6 +62,7 @@ let bleReconnectAttempt = 0;
 let bleReconnectDevice = null;
 let bleReconnectInFlight = false;
 const syncs = [];       // segment re-sync functions, run after loading settings
+const printerWaiters = []; // resolved on the next connection (MCP jobs wait here)
 
 // ---------- settings ----------
 function collectSettings() {
@@ -549,6 +550,7 @@ function attach(t) {
   setStatus(t.name, true);
   log(`接続: ${t.name}`);
   updateButtons();
+  printerWaiters.splice(0).forEach((resolve) => resolve());
 }
 
 async function connect() {
@@ -575,14 +577,17 @@ async function connect() {
   }
 }
 
-async function withBusy(fn) {
+// quiet: rethrow instead of alerting (MCP jobs report errors back to Claude)
+async function withBusy(fn, { quiet = false } = {}) {
+  if (busy) throw new Error('プリンターは処理中です');
   busy = true;
   updateButtons();
   try {
-    await fn();
+    return await fn();
   } catch (e) {
     log(`エラー: ${e.message}`);
     $('progress').textContent = '';
+    if (quiet) throw e;
     alert(e.message);
   } finally {
     busy = false;
@@ -592,32 +597,198 @@ async function withBusy(fn) {
 
 let syncTape = () => {};
 
+// Read the loaded tape and select it; returns the tape index.
+async function loadTape() {
+  const t = await printer.readTape();
+  if (t.index < 0) throw new Error(`テープを認識できませんでした（コード 0x${t.code.toString(16)}）`);
+  state.tape = String(t.index);
+  syncTape();
+  refresh();
+  log(`テープ: ${TAPES[t.index].label}`);
+  return t.index;
+}
+
 function readTape() {
-  return withBusy(async () => {
-    const t = await printer.readTape();
-    if (t.index < 0) {
-      alert(`テープを認識できませんでした（コード 0x${t.code.toString(16)}）`);
-      return;
-    }
-    state.tape = String(t.index);
-    syncTape();
-    refresh();
-    log(`テープ: ${TAPES[t.index].label}`);
+  return withBusy(loadTape);
+}
+
+async function sendPrint() {
+  const o = options();
+  const page = { data: toRaster(current.canvas), widthDots: current.widthDots };
+  $('progress').textContent = '送信中…';
+  await printer.print([page], o, (done, total) => {
+    $('progress').textContent = `${done} / ${total} 枚`;
   });
+  $('progress').textContent = '印刷しました';
+  setTimeout(() => { if (!busy) $('progress').textContent = ''; }, 4000);
 }
 
 function print() {
   if (!current) return;
-  const o = options();
-  const page = { data: toRaster(current.canvas), widthDots: current.widthDots };
-  return withBusy(async () => {
-    $('progress').textContent = '送信中…';
-    await printer.print([page], o, (done, total) => {
-      $('progress').textContent = `${done} / ${total} 枚`;
-    });
-    $('progress').textContent = '印刷しました';
-    setTimeout(() => { if (!busy) $('progress').textContent = ''; }, 4000);
+  return withBusy(sendPrint);
+}
+
+// ---------- MCP bridge ----------
+// On the local server, mcp/nameland_mcp.py hands print jobs to this tab:
+// the tab long-polls /bridge/next and posts the result to /bridge/result.
+
+const BRIDGE_HEADERS = { 'X-Nameland-Bridge': '1' };
+const MARGINS = { small: '0', medium: '1', large: '2' };
+const CUTTING = { full: '0', full_half: '1', none: '2' };
+
+function waitForPrinter(ms) {
+  if (printer) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => resolve(!!printer);
+    printerWaiters.push(done);
+    setTimeout(done, ms);
   });
+}
+
+function findFontFamily(name) {
+  const q = name.trim().toLowerCase();
+  const hit = (f) => f.family.toLowerCase() === q || f.label.toLowerCase() === q;
+  const f = PRESETS.find(hit) || (localFonts() || []).find(hit)
+    || PRESETS.find((x) => x.label.toLowerCase().includes(q) || x.family.toLowerCase().includes(q))
+    || (localFonts() || []).find((x) => x.family.toLowerCase().includes(q));
+  if (!f) throw new Error(`フォント「${name}」が見つかりません`);
+  return f;
+}
+
+// Apply job arguments over the current settings; unspecified ones stay as they are.
+async function applyJobArgs(a) {
+  closeModals();
+  const set = (id, v) => { if (v !== undefined && v !== null) $(id).value = String(v); };
+  set('text', a.text);
+  if (a.tape_mm !== undefined) {
+    const i = TAPE_MM.indexOf(Number(a.tape_mm));
+    if (i < 0) throw new Error(`テープ幅 ${a.tape_mm}mm には対応していません`);
+    state.tape = String(i);
+  }
+  if (a.align) state.align = a.align;
+  if (a.frame) state.frame = a.frame;
+  if (a.invert !== undefined) $('invert').checked = !!a.invert;
+  set('fontScale', a.font_scale);
+  if (a.length_mm !== undefined) {
+    state.lengthMode = Number(a.length_mm) > 0 ? 'fixed' : 'auto';
+    if (Number(a.length_mm) > 0) set('length', a.length_mm);
+  }
+  if (a.margin) state.margin = MARGINS[a.margin] ?? state.margin;
+  state.code = a.code || (a.qr_text ? 'qr' : a.barcode_text ? 'barcode' : 'none');
+  if (a.code_position) state.codePos = a.code_position;
+  set('qrText', a.qr_text);
+  set('barType', a.barcode_type);
+  set('barText', a.barcode_text);
+  if (a.barcode_show_text !== undefined) $('barShowText').checked = !!a.barcode_show_text;
+  set('copies', a.copies);
+  set('density', a.density);
+  if (a.cutting) set('cutting', CUTTING[a.cutting]);
+  if (a.font) {
+    const f = findFontFamily(a.font);
+    const style = f.styles.find((s) => s.label.toLowerCase() === String(a.font_style || '').toLowerCase()) || defaultStyle(f);
+    state.font = { source: f.source, family: f.family, style: style.label };
+  } else if (a.font_style) {
+    state.font = { ...state.font, style: a.font_style };
+  }
+  currentName = '';
+  syncs.forEach((f) => f());
+  await applyFont();   // re-renders the label
+  if (!current) throw new Error($('warn').textContent || 'ラベルを作れませんでした');
+}
+
+function labelInfo() {
+  const o = options();
+  const printedMm = current.widthDots / DOTS_PER_MM;
+  return {
+    text: o.text,
+    tape: TAPES[o.tape].label,
+    lengthMm: Math.round((printedMm + 2 * o.sideMarginMm) * 10) / 10,
+    font: `${font.family.label} ${font.style.label}`,
+    textHeightMm: current.fontPx ? Math.round(current.fontPx / DOTS_PER_MM * 10) / 10 : 0,
+    copies: o.copies,
+    warning: $('warn').textContent || undefined,
+  };
+}
+
+// The exact 1-bit dots, black on white, enlarged so small tapes stay legible.
+function previewPng() {
+  const dots = document.createElement('canvas');
+  drawPreview(dots, current.canvas, [0, 0, 0]);
+  const s = Math.max(1, Math.min(4, Math.floor(1600 / current.widthDots)));
+  const out = document.createElement('canvas');
+  out.width = dots.width * s;
+  out.height = dots.height * s;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(dots, 0, 0, out.width, out.height);
+  return out.toDataURL('image/png');
+}
+
+async function runBridgeJob(job) {
+  const a = job.args || {};
+  log(`MCP: ${job.type}`);
+  if (job.type === 'status') {
+    const info = { connected: !!printer, transport: transport ? (transport instanceof BleTransport ? 'ble' : 'usb') : null,
+      printer: transport ? transport.name : null, busy, appVersion: APP_VERSION };
+    if (printer && !busy) info.tape = TAPES[await withBusy(loadTape, { quiet: true })].label;
+    return { ok: true, info };
+  }
+  if (job.type === 'preview') {
+    if (a.tape_mm === undefined && printer && !busy) await withBusy(loadTape, { quiet: true });
+    await applyJobArgs(a);
+    return { ok: true, png: previewPng(), info: labelInfo() };
+  }
+  if (job.type === 'print') {
+    if (!printer) {
+      log('MCP: プリンターの接続を待っています…');
+      if (!await waitForPrinter(20000)) {
+        throw new Error('プリンターに接続されていません。アプリの「接続」を押してから、もう一度実行してください');
+      }
+    }
+    if (a.copies === undefined) a.copies = 1;
+    return await withBusy(async () => {
+      if (a.tape_mm === undefined) await loadTape();
+      await applyJobArgs(a);
+      if (current.overflow) throw new Error('内容が指定の長さに収まっていません');
+      const info = labelInfo();
+      await sendPrint();
+      return { ok: true, info };
+    }, { quiet: true });
+  }
+  throw new Error(`unknown job: ${job.type}`);
+}
+
+async function bridgeLoop() {
+  let delay = 1000;
+  for (;;) {
+    let job = null;
+    try {
+      const appState = { connected: !!printer, busy };
+      const res = await fetch('/bridge/next', { headers: { ...BRIDGE_HEADERS, 'X-Nameland-State': JSON.stringify(appState) }, cache: 'no-store' });
+      if (res.status === 404 || res.status === 501) return;   // plain static server: no bridge
+      if (res.status === 200) job = await res.json();
+      else if (res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      delay = 1000;
+    } catch {
+      // server not running (MCP session ended); keep trying quietly
+      await new Promise((ok) => setTimeout(ok, delay));
+      delay = Math.min(10000, delay * 2);
+      continue;
+    }
+    if (!job) continue;
+    let result;
+    try {
+      result = await runBridgeJob(job);
+    } catch (e) {
+      result = { ok: false, error: e.message || String(e) };
+    }
+    await fetch('/bridge/result', {
+      method: 'POST', headers: { ...BRIDGE_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: job.id, result }),
+    }).catch(() => {});
+  }
 }
 
 // ---------- init ----------
@@ -815,3 +986,4 @@ function setupInstall() {
 
 init();
 setupInstall();
+if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') bridgeLoop();
