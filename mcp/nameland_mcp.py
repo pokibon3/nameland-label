@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP server (stdio) that prints labels on the KL-SP100 through the web app.
+"""MCP server (stdio) that prints labels and image files on the KL-SP100 through the web app.
 
 The app keeps doing the rendering and the USB / Bluetooth work; this server
 only hands it jobs. It also serves the app on http://localhost:8123 (the same
@@ -9,7 +9,9 @@ If another process already serves the port, that server is used instead.
 Standard library only. Logs go to stderr; stdout carries JSON-RPC.
 """
 
+import base64
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -25,7 +27,7 @@ import server as appserver  # noqa: E402
 
 PORT = int(os.environ.get("NAMELAND_PORT", appserver.DEFAULT_PORT))
 BASE = f"http://localhost:{PORT}"
-SERVER_INFO = {"name": "nameland", "version": "1.1.14"}
+SERVER_INFO = {"name": "nameland", "version": "1.1.15"}
 
 
 def log(*args):
@@ -153,6 +155,24 @@ PRINT_PROPS = {
     "cutting": {"type": "string", "enum": ["full", "full_half", "none"], "description": "カット方法"},
 }
 
+IMAGE_PROPS = {
+    "path": {"type": "string", "description": "画像ファイルの絶対パス（PNG / JPEG / GIF / WebP / BMP / SVG）。白地に黒で描いたもの。透明部分は印字しない"},
+    "size": {"type": "string", "enum": ["fit", "actual"],
+             "description": "fit（既定）: 画像の高さをテープの印字幅いっぱいに合わせる。actual: 画像の実寸で印字（SVG は mm/in の寸法、ラスタは dpi）。"
+                            "印字幅は 3.5/6/9/12/18/24mm テープで 2/4/7/10/16/18mm（8 dot/mm）"},
+    "dpi": {"type": "number", "minimum": 1,
+            "description": "size=actual のときのラスタ画像の解像度。省略時は 1 画素 = 1 ドット（203.2 dpi）、SVG は 96"},
+    "tape_mm": LABEL_PROPS["tape_mm"],
+    "invert": LABEL_PROPS["invert"],
+    "margin": LABEL_PROPS["margin"],
+}
+
+PRINT_IMAGE_PROPS = {**IMAGE_PROPS, **{k: PRINT_PROPS[k] for k in ("copies", "density", "cutting")}}
+
+IMAGE_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
 TOOLS = [
     {
         "name": "print_label",
@@ -166,6 +186,17 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": LABEL_PROPS},
     },
     {
+        "name": "print_image",
+        "description": "画像ファイルを KL-SP100 で印刷する。テープ方向（横）が画像の横、テープ幅方向が画像の縦。"
+                       "寸法を合わせたいときは、高さを印字幅にした SVG（mm 単位）を size=fit で渡す。",
+        "inputSchema": {"type": "object", "properties": PRINT_IMAGE_PROPS, "required": ["path"]},
+    },
+    {
+        "name": "preview_image",
+        "description": "印刷せずに画像ラベルの印字ドットを返す。引数は print_image と同じ。",
+        "inputSchema": {"type": "object", "properties": IMAGE_PROPS, "required": ["path"]},
+    },
+    {
         "name": "printer_status",
         "description": "アプリとプリンターの接続状態、装着テープ幅を返す。",
         "inputSchema": {"type": "object", "properties": {}},
@@ -173,7 +204,36 @@ TOOLS = [
 ]
 
 
+def image_args(args):
+    """Replace `path` with the file as a data URL the app can load."""
+    path = os.path.expanduser(args.get("path") or "")
+    mime = IMAGE_TYPES.get(os.path.splitext(path)[1].lower()) or mimetypes.guess_type(path)[0]
+    if not mime or not mime.startswith("image/"):
+        raise BridgeError(f"画像ファイルではありません: {path}")
+    try:
+        if os.path.getsize(path) > MAX_IMAGE_BYTES:
+            raise BridgeError("画像ファイルが大きすぎます（10MB まで）")
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+    except OSError as e:
+        raise BridgeError(f"画像を読めません: {e}") from e
+    out = {k: v for k, v in args.items() if k != "path"}
+    out.update(image=f"data:{mime};base64,{data}", name=os.path.basename(path))
+    return out
+
+
 def call_tool(name, args):
+    if name == "print_image":
+        copies = int(args.get("copies") or 1)
+        r = run_job("print_image", image_args(args), timeout=60 + 30 * copies)
+        return [{"type": "text", "text": json.dumps(r.get("info", {}), ensure_ascii=False)}]
+    if name == "preview_image":
+        r = run_job("preview_image", image_args(args), timeout=30)
+        png = r["png"].split(",", 1)[1]
+        return [
+            {"type": "image", "data": png, "mimeType": "image/png"},
+            {"type": "text", "text": json.dumps(r.get("info", {}), ensure_ascii=False)},
+        ]
     if name == "print_label":
         copies = int(args.get("copies") or 1)
         r = run_job("print", args, timeout=60 + 30 * copies)

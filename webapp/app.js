@@ -1,5 +1,5 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.25';
-import { renderLabel, toRaster, drawPreview } from './raster.js';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.26';
+import { renderLabel, renderImage, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
 import {
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.25';
+const APP_VERSION = '1.1.26';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -655,34 +655,41 @@ function findFontFamily(name) {
   return f;
 }
 
-// Apply job arguments over the current settings; unspecified ones stay as they are.
-async function applyJobArgs(a) {
-  closeModals();
-  const set = (id, v) => { if (v !== undefined && v !== null) $(id).value = String(v); };
-  set('text', a.text);
+const setInput = (id, v) => { if (v !== undefined && v !== null) $(id).value = String(v); };
+
+// Tape and print settings shared by text and image jobs.
+function applyPrintArgs(a) {
   if (a.tape_mm !== undefined) {
     const i = TAPE_MM.indexOf(Number(a.tape_mm));
     if (i < 0) throw new Error(`テープ幅 ${a.tape_mm}mm には対応していません`);
     state.tape = String(i);
   }
+  if (a.invert !== undefined) $('invert').checked = !!a.invert;
+  if (a.margin) state.margin = MARGINS[a.margin] ?? state.margin;
+  setInput('copies', a.copies);
+  setInput('density', a.density);
+  if (a.cutting) setInput('cutting', CUTTING[a.cutting]);
+}
+
+// Apply job arguments over the current settings; unspecified ones stay as they are.
+async function applyJobArgs(a) {
+  closeModals();
+  const set = setInput;
+  set('text', a.text);
+  applyPrintArgs(a);
   if (a.align) state.align = a.align;
   if (a.frame) state.frame = a.frame;
-  if (a.invert !== undefined) $('invert').checked = !!a.invert;
   set('fontScale', a.font_scale);
   if (a.length_mm !== undefined) {
     state.lengthMode = Number(a.length_mm) > 0 ? 'fixed' : 'auto';
     if (Number(a.length_mm) > 0) set('length', a.length_mm);
   }
-  if (a.margin) state.margin = MARGINS[a.margin] ?? state.margin;
   state.code = a.code || (a.qr_text ? 'qr' : a.barcode_text ? 'barcode' : 'none');
   if (a.code_position) state.codePos = a.code_position;
   set('qrText', a.qr_text);
   set('barType', a.barcode_type);
   set('barText', a.barcode_text);
   if (a.barcode_show_text !== undefined) $('barShowText').checked = !!a.barcode_show_text;
-  set('copies', a.copies);
-  set('density', a.density);
-  if (a.cutting) set('cutting', CUTTING[a.cutting]);
   if (a.font) {
     const f = findFontFamily(a.font);
     const style = f.styles.find((s) => s.label.toLowerCase() === String(a.font_style || '').toLowerCase()) || defaultStyle(f);
@@ -694,6 +701,37 @@ async function applyJobArgs(a) {
   syncs.forEach((f) => f());
   await applyFont();   // re-renders the label
   if (!current) throw new Error($('warn').textContent || 'ラベルを作れませんでした');
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('画像を読み込めませんでした'));
+    img.src = src;
+  });
+}
+
+// Image jobs change only the print settings; the text label in the editor stays as it is.
+async function renderImageJob(a) {
+  closeModals();
+  applyPrintArgs(a);
+  syncs.forEach((f) => f());
+  refresh();
+  const img = await loadImage(a.image);
+  // SVG mm / in lengths resolve at 96 px per inch; raster pixels default to one dot each
+  const dpi = Number(a.dpi) || (a.image.startsWith('data:image/svg') ? 96 : DOTS_PER_MM * 25.4);
+  const o = options();
+  current = renderImage(img, o, a.size || 'fit', dpi);
+  const mm = (d) => Math.round(d / DOTS_PER_MM * 100) / 100;
+  return {
+    image: a.name,
+    tape: TAPES[o.tape].label,
+    imageMm: current.imageDots.map(mm),
+    lengthMm: Math.round((current.widthDots / DOTS_PER_MM + 2 * o.sideMarginMm) * 10) / 10,
+    dots: [current.widthDots, current.heightDots],
+    copies: o.copies,
+  };
 }
 
 function labelInfo() {
@@ -740,7 +778,16 @@ async function runBridgeJob(job) {
     await applyJobArgs(a);
     return { ok: true, png: previewPng(), info: labelInfo() };
   }
-  if (job.type === 'print') {
+  if (job.type === 'preview_image') {
+    if (a.tape_mm === undefined && printer && !busy) await withBusy(loadTape, { quiet: true });
+    try {
+      const info = await renderImageJob(a);
+      return { ok: true, png: previewPng(), info };
+    } finally {
+      refresh();   // back to the text label in the editor
+    }
+  }
+  if (job.type === 'print' || job.type === 'print_image') {
     if (!printer) {
       log('MCP: プリンターの接続を待っています…');
       if (!await waitForPrinter(20000)) {
@@ -750,6 +797,15 @@ async function runBridgeJob(job) {
     if (a.copies === undefined) a.copies = 1;
     return await withBusy(async () => {
       if (a.tape_mm === undefined) await loadTape();
+      if (job.type === 'print_image') {
+        try {
+          const info = await renderImageJob(a);
+          await sendPrint();
+          return { ok: true, info };
+        } finally {
+          refresh();
+        }
+      }
       await applyJobArgs(a);
       if (current.overflow) throw new Error('内容が指定の長さに収まっていません');
       const info = labelInfo();

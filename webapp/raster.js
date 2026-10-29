@@ -224,6 +224,51 @@ export function renderLabel(o, scale = 1) {
   };
 }
 
+/**
+ * Render a loaded image (HTMLImageElement) as a label, in the same shape as renderLabel.
+ * size 'fit': the image height fills the head dots of the tape, aspect kept.
+ * size 'actual': the image prints at its physical size, `dpi` pixels per inch
+ * (SVG lengths in mm / in resolve at 96 px per inch, so pass 96 for SVG).
+ * Transparent pixels print as blank. Throws when an actual-size image is taller than the tape.
+ */
+export function renderImage(img, o, size = 'fit', dpi = 96) {
+  const H = HEAD_DOTS[o.tape];
+  const iw = img.naturalWidth, ih = img.naturalHeight;
+  if (!iw || !ih) throw new Error('画像の大きさを読み取れません');
+  let w, h;
+  if (size === 'actual') {
+    const k = (25.4 / dpi) * DOTS_PER_MM;
+    w = iw * k;
+    h = ih * k;
+    if (h > H + 0.5) {
+      throw new Error(`画像の高さ ${(h / DOTS_PER_MM).toFixed(1)}mm が印字幅 ${H / DOTS_PER_MM}mm を超えています`);
+    }
+  } else {
+    h = H;
+    w = (iw * H) / ih;
+  }
+  const W = (Math.max(8, Math.ceil(w)) + 7) & ~7;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+
+  if (o.invert) {
+    ctx.globalCompositeOperation = 'difference';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  return {
+    canvas, widthDots: W, heightDots: H, imageDots: [w, h],
+    fontPx: 0, qrModuleDots: 0, barModuleDots: 0, overflow: false,
+  };
+}
+
 // Ink where luminance < 128 (black text matches the official app's red < 128;
 // luminance also gives sensible results for colour emoji).
 export function inkMask(canvas) {

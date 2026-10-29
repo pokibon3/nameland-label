@@ -52,7 +52,16 @@ claude mcp add -s user nameland -- python3 /path/to/NAMELAND/mcp/nameland_mcp.py
 - 印刷の描画と USB / Bluetooth 通信はアプリがそのまま行うので、アプリで印刷したものと同じ結果になります
 - 指定しなかった項目（フォント、枠など）はアプリの現在の設定を使います。テープ幅を指定しない場合は装着テープを読み取ります
 
-ツール: `print_label`（印刷）、`preview_label`（印刷される画像を確認）、`printer_status`（接続状態・テープ幅）
+ツール: `print_label`（印刷）、`preview_label`（印刷される画像を確認）、`print_image` / `preview_image`（画像ファイルの印刷・確認）、`printer_status`（接続状態・テープ幅）
+
+### 画像を印刷する
+
+`print_image` は PNG / JPEG / GIF / WebP / BMP / SVG ファイルを印刷します。画像の横がテープの長さ方向、縦がテープ幅方向です。
+
+- `size: "fit"`（既定）: 画像の高さを印字幅いっぱいに合わせます（縦横比は保持）
+- `size: "actual"`: 実寸で印字します。SVG は mm / in の寸法どおり、ラスタ画像は `dpi`（省略時は 1 画素 = 1 ドット）
+- ヘッドは 8 ドット/mm で、印字幅は 3.5 / 6 / 9 / 12 / 18 / 24mm テープでそれぞれ 2 / 4 / 7 / 10 / 16 / 18mm です。高さを印字幅にした mm 単位の SVG を `fit` で印刷すると、寸法どおりに印字されます（例: 12mm テープなら高さ 10mm）
+- 印刷・確認をしても、アプリで編集中のテキストラベルは変わりません
 
 USB / Bluetooth の接続許可は、最初の 1 回だけアプリの画面で行ってください。中継はローカルサーバー上のアプリだけで有効で、GitHub Pages 版では動きません。
 
