@@ -119,14 +119,19 @@ function textBlock(o, h) {
 function qrBlock(o, h) {
   const qr = makeQr(o.qrText, o.qrEc || 'M');
   const n = qr.getModuleCount();
-  const m = Math.max(1, Math.floor(h / (n + 2)));
-  const size = n * m;
+  // Fill the whole print height: the unprinted tape edges serve as the quiet
+  // zone above and below. When the height is not a multiple of the module
+  // count, the modules are a mix of two whole-dot sizes (e.g. 2 and 3).
+  const size = Math.max(n, h);
+  const edge = Array.from({ length: n + 1 }, (_, i) => Math.round((i * size) / n));
   return {
-    kind: 'qr', w: size, qrModule: m,
+    kind: 'qr', w: size, qrModule: Math.round((size / n) * 10) / 10,
     draw(ctx, x, y) {
       const y0 = y + Math.floor((h - size) / 2);
       for (let r = 0; r < n; r++) {
-        for (let c = 0; c < n; c++) if (qr.isDark(r, c)) ctx.fillRect(x + c * m, y0 + r * m, m, m);
+        for (let c = 0; c < n; c++) {
+          if (qr.isDark(r, c)) ctx.fillRect(x + edge[c], y0 + edge[r], edge[c + 1] - edge[c], edge[r + 1] - edge[r]);
+        }
       }
     },
   };

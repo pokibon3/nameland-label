@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.26';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.39';
 import { renderLabel, renderImage, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.26';
+const APP_VERSION = '1.1.39';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -61,6 +61,7 @@ let bleReconnectTimer = null;
 let bleReconnectAttempt = 0;
 let bleReconnectDevice = null;
 let bleReconnectInFlight = false;
+let superseded = false;   // another window has taken over the printer
 const syncs = [];       // segment re-sync functions, run after loading settings
 const printerWaiters = []; // resolved on the next connection (MCP jobs wait here)
 
@@ -484,6 +485,7 @@ function cancelBleReconnect() {
 }
 
 function scheduleBleReconnect(delay = null) {
+  if (superseded) return;
   if (bleReconnectTimer !== null || bleReconnectInFlight || printer || !('bluetooth' in navigator)) return;
   let lastTransport = null;
   let deviceId = null;
@@ -565,6 +567,10 @@ async function connect() {
     updateButtons();
     return;
   }
+  if (bleReconnectInFlight) {
+    log('自動再接続の途中です。終わるまでお待ちください');
+    return;
+  }
   try {
     cancelBleReconnect();
     const kind = $('transportMode').value;
@@ -612,11 +618,11 @@ function readTape() {
   return withBusy(loadTape);
 }
 
-async function sendPrint() {
+async function sendPrint(pages = null) {
   const o = options();
-  const page = { data: toRaster(current.canvas), widthDots: current.widthDots };
+  pages ??= [{ data: toRaster(current.canvas), widthDots: current.widthDots }];
   $('progress').textContent = '送信中…';
-  await printer.print([page], o, (done, total) => {
+  await printer.print(pages, o, (done, total) => {
     $('progress').textContent = `${done} / ${total} 枚`;
   });
   $('progress').textContent = '印刷しました';
@@ -635,6 +641,17 @@ function print() {
 const BRIDGE_HEADERS = { 'X-Nameland-Bridge': '1' };
 const MARGINS = { small: '0', medium: '1', large: '2' };
 const CUTTING = { full: '0', full_half: '1', none: '2' };
+
+// Wait for the printer, retrying a dropped Bluetooth link right away instead
+// of sitting out the growing retry delay (up to 30 s).
+function reconnectForJob(ms) {
+  if (!printer && bleReconnectTimer !== null) {
+    clearTimeout(bleReconnectTimer);
+    bleReconnectTimer = null;
+    scheduleBleReconnect(0);
+  }
+  return waitForPrinter(ms);
+}
 
 function waitForPrinter(ms) {
   if (printer) return Promise.resolve(true);
@@ -790,21 +807,52 @@ async function runBridgeJob(job) {
   if (job.type === 'print' || job.type === 'print_image') {
     if (!printer) {
       log('MCP: プリンターの接続を待っています…');
-      if (!await waitForPrinter(20000)) {
+      if (!await reconnectForJob(60000)) {
         throw new Error('プリンターに接続されていません。アプリの「接続」を押してから、もう一度実行してください');
       }
     }
     if (a.copies === undefined) a.copies = 1;
+    for (const k of ['texts', 'images']) {
+      if (a[k] !== undefined && !Array.isArray(a[k])) throw new Error(`${k} が配列ではありません`);
+    }
+    // Several labels in one job stay joined by half cuts; only the last is cut through.
+    const count = Number(a.copies) * (a.images ? a.images.length : a.texts ? a.texts.length : 1);
+    if (a.cutting === undefined && count > 1) a.cutting = 'full_half';
     return await withBusy(async () => {
       if (a.tape_mm === undefined) await loadTape();
       if (job.type === 'print_image') {
         try {
-          const info = await renderImageJob(a);
-          await sendPrint();
-          return { ok: true, info };
+          if (!a.images) {
+            const info = await renderImageJob(a);
+            await sendPrint();
+            return { ok: true, info };
+          }
+          const pages = [];
+          const infos = [];
+          for (const im of a.images) {
+            infos.push(await renderImageJob({ ...a, ...im }));
+            pages.push({ data: toRaster(current.canvas), widthDots: current.widthDots });
+          }
+          await sendPrint(pages);
+          return { ok: true, info: { images: infos.map((i) => i.image), tape: infos[0].tape,
+            lengthMm: infos.map((i) => i.lengthMm), copies: a.copies, cutting: a.cutting } };
         } finally {
           refresh();
         }
+      }
+      if (a.texts) {
+        // Same layout, one label per text, joined like the image list above.
+        const pages = [];
+        const infos = [];
+        for (const text of a.texts) {
+          await applyJobArgs({ ...a, text });
+          if (current.overflow) throw new Error(`「${text}」が指定の長さに収まっていません`);
+          infos.push(labelInfo());
+          pages.push({ data: toRaster(current.canvas), widthDots: current.widthDots });
+        }
+        await sendPrint(pages);
+        return { ok: true, info: { texts: a.texts, tape: infos[0].tape, lengthMm: infos.map((i) => i.lengthMm),
+          font: infos[0].font, copies: a.copies, cutting: a.cutting } };
       }
       await applyJobArgs(a);
       if (current.overflow) throw new Error('内容が指定の長さに収まっていません');
@@ -819,6 +867,7 @@ async function runBridgeJob(job) {
 async function bridgeLoop() {
   let delay = 1000;
   for (;;) {
+    if (superseded) return;
     let job = null;
     try {
       const appState = { connected: !!printer, busy };
@@ -1042,4 +1091,25 @@ function setupInstall() {
 
 init();
 setupInstall();
+// Only one window may drive the printer: two windows reconnecting to it at
+// once kick each other off ("GATT operation already in progress") and both
+// answer the MCP bridge. A newly opened window takes over; older ones let go.
+try {
+  const channel = new BroadcastChannel('nameland-app');
+  channel.onmessage = async (e) => {
+    if (e.data !== 'opened' || superseded) return;
+    superseded = true;
+    cancelBleReconnect();
+    if (transport) {
+      transport.intentionalClose = true;
+      await transport.close().catch(() => {});
+      printer = transport = null;
+    }
+    setStatus('別のウィンドウで使用中');
+    log('別のウィンドウでアプリが開かれたため、こちらはプリンターから切断しました。使うときは再読み込みしてください');
+    updateButtons();
+  };
+  channel.postMessage('opened');
+} catch { /* BroadcastChannel unavailable */ }
+
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') bridgeLoop();

@@ -150,9 +150,12 @@ LABEL_PROPS = {
 
 PRINT_PROPS = {
     **LABEL_PROPS,
+    "texts": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 99,
+              "description": "text の代わりに、文字だけ違うラベルを 1 回の印刷で続けて出す（並び順どおり、各 copies 枚。他の設定は共通）"},
     "copies": {"type": "integer", "minimum": 1, "maximum": 99, "description": "枚数（既定 1）"},
     "density": {"type": "integer", "minimum": 1, "maximum": 5, "description": "印字濃度（3 = 標準）"},
-    "cutting": {"type": "string", "enum": ["full", "full_half", "none"], "description": "カット方法"},
+    "cutting": {"type": "string", "enum": ["full", "full_half", "none"],
+                "description": "カット方法。省略時、2 枚以上ならハーフカットでつなげて最後だけフルカット（full_half）"},
 }
 
 IMAGE_PROPS = {
@@ -167,7 +170,12 @@ IMAGE_PROPS = {
     "margin": LABEL_PROPS["margin"],
 }
 
-PRINT_IMAGE_PROPS = {**IMAGE_PROPS, **{k: PRINT_PROPS[k] for k in ("copies", "density", "cutting")}}
+PRINT_IMAGE_PROPS = {
+    **IMAGE_PROPS,
+    "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 99,
+              "description": "path の代わりに複数の画像を 1 回の印刷で続けて出す（並び順どおり、各 copies 枚）"},
+    **{k: PRINT_PROPS[k] for k in ("copies", "density", "cutting")},
+}
 
 IMAGE_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
@@ -189,7 +197,7 @@ TOOLS = [
         "name": "print_image",
         "description": "画像ファイルを KL-SP100 で印刷する。テープ方向（横）が画像の横、テープ幅方向が画像の縦。"
                        "寸法を合わせたいときは、高さを印字幅にした SVG（mm 単位）を size=fit で渡す。",
-        "inputSchema": {"type": "object", "properties": PRINT_IMAGE_PROPS, "required": ["path"]},
+        "inputSchema": {"type": "object", "properties": PRINT_IMAGE_PROPS},
     },
     {
         "name": "preview_image",
@@ -204,9 +212,9 @@ TOOLS = [
 ]
 
 
-def image_args(args):
-    """Replace `path` with the file as a data URL the app can load."""
-    path = os.path.expanduser(args.get("path") or "")
+def load_image(path):
+    """Read an image file as a data URL the app can load."""
+    path = os.path.expanduser(path or "")
     mime = IMAGE_TYPES.get(os.path.splitext(path)[1].lower()) or mimetypes.guess_type(path)[0]
     if not mime or not mime.startswith("image/"):
         raise BridgeError(f"画像ファイルではありません: {path}")
@@ -217,15 +225,42 @@ def image_args(args):
             data = base64.b64encode(f.read()).decode()
     except OSError as e:
         raise BridgeError(f"画像を読めません: {e}") from e
-    out = {k: v for k, v in args.items() if k != "path"}
-    out.update(image=f"data:{mime};base64,{data}", name=os.path.basename(path))
+    return {"image": f"data:{mime};base64,{data}", "name": os.path.basename(path)}
+
+
+def image_args(args):
+    """Replace `path` (or `paths`) with the file(s) as data URLs."""
+    out = {k: v for k, v in args.items() if k not in ("path", "paths")}
+    if args.get("paths"):
+        out["images"] = [load_image(p) for p in args["paths"]]
+    elif args.get("path"):
+        out.update(load_image(args["path"]))
+    else:
+        raise BridgeError("path か paths を指定してください")
     return out
 
 
+def list_arg(args, key):
+    """Some clients send an array argument as its JSON text; never iterate that string."""
+    v = args.get(key)
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError as e:
+            raise BridgeError(f"{key} は文字列の配列で指定してください") from e
+    if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+        raise BridgeError(f"{key} は文字列の配列で指定してください")
+    if v is not None:
+        args[key] = v
+    return v
+
+
 def call_tool(name, args):
+    list_arg(args, "paths")
+    list_arg(args, "texts")
     if name == "print_image":
-        copies = int(args.get("copies") or 1)
-        r = run_job("print_image", image_args(args), timeout=60 + 30 * copies)
+        copies = int(args.get("copies") or 1) * max(1, len(args.get("paths") or []))
+        r = run_job("print_image", image_args(args), timeout=120 + 30 * copies)
         return [{"type": "text", "text": json.dumps(r.get("info", {}), ensure_ascii=False)}]
     if name == "preview_image":
         r = run_job("preview_image", image_args(args), timeout=30)
@@ -235,8 +270,8 @@ def call_tool(name, args):
             {"type": "text", "text": json.dumps(r.get("info", {}), ensure_ascii=False)},
         ]
     if name == "print_label":
-        copies = int(args.get("copies") or 1)
-        r = run_job("print", args, timeout=60 + 30 * copies)
+        copies = int(args.get("copies") or 1) * max(1, len(args.get("texts") or []))
+        r = run_job("print", args, timeout=120 + 30 * copies)
         return [{"type": "text", "text": json.dumps(r.get("info", {}), ensure_ascii=False)}]
     if name == "preview_label":
         r = run_job("preview", args, timeout=30)

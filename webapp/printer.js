@@ -477,25 +477,38 @@ export class KLSP100 {
 
       await this.cmd('reset', packet(0x02, 0x01));
       await this.cmd('speed', packet(0x02, 0x1c, 0x01, 0x00, (mode & 0x7d) ? 1 : 0));
-      await this.cmd('autoFeed', packet(0x02, 0x0d, 0x01, 0x00, AUTOFEED[opts.margin]));
-      await this.cmd('setup', packet(
-        0x02, 0x09, 0x05, 0x00,
-        opts.tape, 0x00,
-        total & 0xff, (total >> 8) & 0xff,
-        DENSITY[opts.density - 1],
-        mode === 2 ? 0x05 : 0x00,
-        0x00));
-      await this.cmd('cut', packet(0x02, 0x19, 0x01, 0x00, CUT[opts.endCut][opts.cutting]));
-
-      // The printer keeps the image: send it once, then just print it again
-      // for each further copy (resending appends it to the buffered image).
+      // Like LABEL DESIGN MAKER, each page is its own run: count, feed and cut
+      // settings, the image, one print request per copy, then finish (0x18)
+      // and end (0x25), which empties the printer's image buffer. Every page
+      // but the last sets the continue bit (0x80) on the cut type, so the
+      // labels stay joined and only the last one is cut through.
       let done = 0;
-      for (const page of pages) {
+      for (let i = 0; i < pages.length; i++) {
+        const last = i === pages.length - 1;
+        await this.cmd('setup', packet(
+          0x02, 0x09, 0x05, 0x00,
+          opts.tape, 0x00,
+          copies & 0xff, (copies >> 8) & 0xff,
+          DENSITY[opts.density - 1],
+          mode === 2 ? 0x05 : 0x00,
+          0x00));
+        await this.cmd('autoFeed', packet(0x02, 0x0d, 0x01, 0x00, AUTOFEED[opts.margin]));
+        // Every page but the last sets the continue bit: a half cut between the
+        // labels, a full cut only after the last (as LABEL DESIGN MAKER does).
+        // Very short labels (about 15 mm) came out with two half cuts between.
+        const cut = CUT[last ? opts.endCut : 1][opts.cutting];
+        await this.cmd('cut', packet(0x02, 0x19, 0x01, 0x00, cut));
+        // The printer keeps the image: send it once, then just print it again
+        // for each further copy (resending appends it to the buffered image).
+        await this.transfer(pages[i].data);
         for (let c = 0; c < copies; c++) {
-          if (c === 0) await this.transfer(page.data);
           await this.waitBattery();
           await this.startPrint();
           onProgress(++done, total);
+        }
+        if (!last) {
+          await this.cmd('finish', packet(0x18), { expectAck: false });
+          await this.end();
         }
       }
 
