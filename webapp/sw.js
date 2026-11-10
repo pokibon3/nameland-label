@@ -2,7 +2,7 @@
 // App files are network-first (edits show up immediately while the server
 // runs) and fall back to the cache when it is not running.
 
-const CACHE = 'nameland-v44';
+const CACHE = 'nameland-v45';
 const SHELL = [
   './',
   './index.html',
@@ -56,7 +56,9 @@ self.addEventListener('fetch', (e) => {
 
   e.respondWith((async () => {
     try {
-      const res = await fetch(req);
+      // GitHub Pages sends max-age=600: revalidate so a new version shows
+      // up on the next launch instead of up to 10 minutes later.
+      const res = await fetch(req, { cache: 'no-cache' });
       if (res.ok) {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(req, copy));
