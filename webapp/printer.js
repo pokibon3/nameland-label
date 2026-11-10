@@ -336,7 +336,9 @@ export class BleTransport {
     data.set(payload, 1);
     const pending = responseType === null ? null : this.nextNotification(timeoutMs);
     this.recordTrace('>', data);
-    await this.command.writeValueWithResponse(data);
+    this.awaitingReply = false;
+    await this.write(data);
+    this.awaitingReply = true;
     if (!pending) return null;
     const deadline = Date.now() + timeoutMs;
     let reply = await pending;
@@ -348,6 +350,23 @@ export class BleTransport {
       reply = await this.nextNotification(remaining);
     }
     return reply.subarray(1);
+  }
+
+  // Like LABEL DESIGN MAKER (a.a onCharacteristicWrite -> retry after
+  // 100 ms, up to 3 times): the printer sometimes fails a write while it is
+  // busy, which Chrome reports as "GATT operation failed for unknown reason".
+  async write(data) {
+    for (let retry = 0; ; retry++) {
+      try {
+        await this.command.writeValueWithResponse(data);
+        return;
+      } catch (e) {
+        if (this.disconnected || retry >= 3) throw e;
+        this.trace.push(`! ${e.message} (再送 ${retry + 1})`);
+        await new Promise((ok) => setTimeout(ok, 100));
+        if (this.disconnected) throw disconnectedError();
+      }
+    }
   }
 
   async negotiate() {
@@ -479,12 +498,33 @@ export class KLSP100 {
   /**
    * pages: array of { data: Uint8Array (column raster), widthDots }
    * opts: { tape, margin, density(1..5), copies, cutting(0..2), endCut(0|1), magnet }
+   * from: the label to start at, { page, copy }, when resuming a job.
+   * A dropped Bluetooth link throws an error with `resume` set to the first
+   * label not yet printed, so the caller can reconnect and carry on.
    */
-  async print(pages, opts, onProgress = () => {}) {
+  async print(pages, opts, onProgress = () => {}, from = { page: 0, copy: 0 }) {
     const mode = opts.magnet ? 2 : 1;
     const copies = opts.copies;
     const total = pages.length * copies;
+    let done = from.page * copies + from.copy;
 
+    try {
+      await this.printRun(pages, opts, mode, from, () => onProgress(++done, total));
+    } catch (e) {
+      if (!e.disconnected && !this.t.disconnected) throw e;
+      if (done === total) {
+        this.log('印刷後にプリンターがBluetoothを切断しました（印刷は完了）');
+        return;
+      }
+      const err = new Error(`印刷中にBluetoothが切断されました（${done} / ${total} 枚まで印刷）`);
+      err.disconnected = true;
+      err.resume = { page: Math.floor(done / copies), copy: done % copies };
+      throw err;
+    }
+  }
+
+  async printRun(pages, opts, mode, from, printed) {
+    const copies = opts.copies;
     await this.start();
     try {
       await this.deviceCode();
@@ -503,13 +543,14 @@ export class KLSP100 {
       // and end (0x25), which empties the printer's image buffer. Every page
       // but the last sets the continue bit (0x80) on the cut type, so the
       // labels stay joined and only the last one is cut through.
-      let done = 0;
-      for (let i = 0; i < pages.length; i++) {
+      for (let i = from.page; i < pages.length; i++) {
         const last = i === pages.length - 1;
+        const first = i === from.page ? from.copy : 0;
+        const n = copies - first;
         await this.cmd('setup', packet(
           0x02, 0x09, 0x05, 0x00,
           opts.tape, 0x00,
-          copies & 0xff, (copies >> 8) & 0xff,
+          n & 0xff, (n >> 8) & 0xff,
           DENSITY[opts.density - 1],
           mode === 2 ? 0x05 : 0x00,
           0x00));
@@ -522,23 +563,16 @@ export class KLSP100 {
         // The printer keeps the image: send it once, then just print it again
         // for each further copy (resending appends it to the buffered image).
         await this.transfer(pages[i].data);
-        for (let c = 0; c < copies; c++) {
+        for (let c = first; c < copies; c++) {
           await this.waitBattery();
           try {
             await this.startPrint();
           } catch (e) {
-            if (!e.disconnected) throw e;
-            // The print request went out, so this label is printed. When it
-            // was the last one the job is done; the printer gives up the
-            // session with the link.
-            onProgress(++done, total);
-            if (done === total) {
-              this.log('印刷後にプリンターがBluetoothを切断しました（印刷は完了）');
-              return;
-            }
-            throw new Error(`印刷中にBluetoothが切断されました（${done} / ${total} 枚まで印刷）`);
+            // The print request reached the printer, so this label is printed.
+            if (e.disconnected && this.t.awaitingReply) printed();
+            throw e;
           }
-          onProgress(++done, total);
+          printed();
         }
         if (!last) {
           await this.cmd('finish', packet(0x18), { expectAck: false });

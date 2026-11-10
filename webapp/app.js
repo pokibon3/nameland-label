@@ -1,4 +1,4 @@
-import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.40';
+import { KLSP100, UsbTransport, BleTransport, TAPES, SIDE_MARGIN_MM, DOTS_PER_MM, HEAD_DOTS } from './printer.js?v=1.1.42';
 import { renderLabel, renderImage, toRaster, drawPreview } from './raster.js';
 import { BARCODE_TYPES } from './barcode.js';
 import * as library from './library.js';
@@ -8,7 +8,7 @@ import {
 } from './fonts.js';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.1.40';
+const APP_VERSION = '1.1.42';
 const STORE_KEY = 'nameland-label-v3';
 const TRANSPORT_KEY = 'nameland-last-transport';
 const BLE_DEVICE_KEY = 'nameland-last-ble-device';
@@ -100,7 +100,7 @@ function saveSettings() {
 // ---------- small UI helpers ----------
 function log(msg) {
   const el = $('log');
-  el.textContent += msg + '\n';
+  el.textContent += `${new Date().toTimeString().slice(0, 8)} ${msg}\n`;
   el.scrollTop = el.scrollHeight;
 }
 
@@ -622,9 +622,25 @@ async function sendPrint(pages = null) {
   const o = options();
   pages ??= [{ data: toRaster(current.canvas), widthDots: current.widthDots }];
   $('progress').textContent = '送信中…';
-  await printer.print(pages, o, (done, total) => {
+  const progress = (done, total) => {
     $('progress').textContent = `${done} / ${total} 枚`;
-  });
+  };
+  // The printer sometimes drops the Bluetooth link mid-job. Reconnect and go
+  // on from the first label not yet printed (a few times at most).
+  let from = { page: 0, copy: 0 };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await printer.print(pages, o, progress, from);
+      break;
+    } catch (e) {
+      if (!e.resume || attempt > 3) throw e;
+      from = e.resume;
+      log(`${e.message}。再接続して続きを印刷します`);
+      // Let the app's own disconnect handler run before waiting for the link.
+      await new Promise((ok) => setTimeout(ok, 0));
+      if (!await reconnectForJob(60000)) throw new Error(`${e.message}。再接続できませんでした`);
+    }
+  }
   $('progress').textContent = '印刷しました';
   setTimeout(() => { if (!busy) $('progress').textContent = ''; }, 4000);
 }

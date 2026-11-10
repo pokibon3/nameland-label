@@ -2,12 +2,12 @@
 // App files are network-first (edits show up immediately while the server
 // runs) and fall back to the cache when it is not running.
 
-const CACHE = 'nameland-v45';
+const CACHE = 'nameland-v47';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=1.1.40',
-  './printer.js?v=1.1.40',
+  './app.js?v=1.1.42',
+  './printer.js?v=1.1.42',
   './raster.js',
   './fonts.js',
   './barcode.js',

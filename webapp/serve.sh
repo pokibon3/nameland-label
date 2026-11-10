@@ -6,5 +6,5 @@ cd "$(dirname "$0")" || exit 1
 
 URL="http://localhost:$PORT"
 echo "$URL で起動します（Ctrl+C で停止）"
-(sleep 1; open -a "Google Chrome" "$URL?v=1.1.40" 2>/dev/null || open "$URL?v=1.1.40") &
+(sleep 1; open -a "Google Chrome" "$URL?v=1.1.42" 2>/dev/null || open "$URL?v=1.1.42") &
 exec python3 server.py "$PORT"
