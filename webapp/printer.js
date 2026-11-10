@@ -172,6 +172,13 @@ class BleRasterCipher {
   }
 }
 
+// Thrown when the Bluetooth link drops while a reply is awaited.
+function disconnectedError() {
+  const e = new Error('Bluetoothが切断されました');
+  e.disconnected = true;
+  return e;
+}
+
 export class BleTransport {
   constructor(device) {
     this.device = device;
@@ -180,6 +187,16 @@ export class BleTransport {
     this.waiters = [];
     this.responses = [];
     this.trace = [];
+    this.disconnected = false;
+  }
+
+  // The printer may drop the link mid-job (seen right after the print
+  // request). Fail every pending reply at once instead of waiting out its
+  // timeout (up to 120 s for print).
+  onDisconnected() {
+    this.disconnected = true;
+    const err = disconnectedError();
+    this.waiters.splice(0).forEach((w) => w(null, err));
   }
 
   static async request() {
@@ -259,6 +276,7 @@ export class BleTransport {
       t.onNotification = (e) => t.deliver(new Uint8Array(
         e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength));
       t.response.addEventListener('characteristicvaluechanged', t.onNotification);
+      device.addEventListener('gattserverdisconnected', () => t.onDisconnected(), { once: true });
       await t.response.startNotifications();
       await t.negotiate();
       return t;
@@ -281,11 +299,13 @@ export class BleTransport {
 
   nextNotification(timeoutMs = 10000) {
     if (this.notifications.length) return Promise.resolve(this.notifications.shift());
+    if (this.disconnected) return Promise.reject(disconnectedError());
     return new Promise((resolve, reject) => {
       let timer;
-      const done = (value) => {
+      const done = (value, err) => {
         clearTimeout(timer);
-        resolve(value);
+        if (err) reject(err);
+        else resolve(value);
       };
       this.waiters.push(done);
       timer = setTimeout(() => {
@@ -308,6 +328,7 @@ export class BleTransport {
   async frame(payload, {
     commandType = 0x80, text = false, timeoutMs = 10000, responseType = 0x40,
   } = {}) {
+    if (this.disconnected) throw disconnectedError();
     this.sequence = (this.sequence + 1) & 0x1f;
     const header = commandType | (text ? 0x20 : 0) | this.sequence;
     const data = new Uint8Array(payload.length + 1);
@@ -503,7 +524,20 @@ export class KLSP100 {
         await this.transfer(pages[i].data);
         for (let c = 0; c < copies; c++) {
           await this.waitBattery();
-          await this.startPrint();
+          try {
+            await this.startPrint();
+          } catch (e) {
+            if (!e.disconnected) throw e;
+            // The print request went out, so this label is printed. When it
+            // was the last one the job is done; the printer gives up the
+            // session with the link.
+            onProgress(++done, total);
+            if (done === total) {
+              this.log('印刷後にプリンターがBluetoothを切断しました（印刷は完了）');
+              return;
+            }
+            throw new Error(`印刷中にBluetoothが切断されました（${done} / ${total} 枚まで印刷）`);
+          }
           onProgress(++done, total);
         }
         if (!last) {
@@ -514,7 +548,7 @@ export class KLSP100 {
 
       await this.cmd('finish', packet(0x18), { expectAck: false }).catch(() => {});
     } finally {
-      await this.end().catch(() => {});
+      if (!this.t.disconnected) await this.end().catch(() => {});
     }
   }
 

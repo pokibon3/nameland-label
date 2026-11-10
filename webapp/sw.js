@@ -6,8 +6,8 @@ const CACHE = 'nameland-v44';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=1.1.39',
-  './printer.js?v=1.1.39',
+  './app.js?v=1.1.40',
+  './printer.js?v=1.1.40',
   './raster.js',
   './fonts.js',
   './barcode.js',
